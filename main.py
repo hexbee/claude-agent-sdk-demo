@@ -25,13 +25,14 @@ async def run_demo() -> None:
 
     options = ClaudeAgentOptions(
         settings=settings_path,
-        setting_sources=["user"],
-        max_turns=1,
+        setting_sources=["user", "project"],
+        permission_mode="bypassPermissions",
+        max_turns=2,
     )
 
     prompt = (
-        "Reply with one short sentence confirming whether you can access the Claude "
-        "runtime. Do not use any tools."
+        "List the available skills you can use from the loaded Claude settings. "
+        "If no skills are available, reply with one short sentence saying so."
     )
 
     transport = LoggingSubprocessCLITransport(prompt=prompt, options=options)
