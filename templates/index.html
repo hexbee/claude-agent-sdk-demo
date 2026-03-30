@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Claude Agent UI</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/app.css') }}"
+    >
+    <script
+      defer
+      src="{{ url_for('static', filename='js/app.js') }}"
+    ></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="panel">
+          <div class="panel-label">Session</div>
+          <h1 class="title">Claude Agent UI</h1>
+          <p class="subtitle">
+            单用户本地演示，支持多轮对话、工具/MCP/skills 可视化与新建 session。
+          </p>
+          <div class="session-meta" id="session-meta"></div>
+          <div class="sidebar-actions">
+            <button id="new-session-button" class="primary-button" type="button">
+              新建 Session
+            </button>
+          </div>
+          <div id="error-banner" class="error-banner is-hidden"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-label">Capabilities</div>
+          <div id="capabilities-panel" class="capabilities-panel"></div>
+        </div>
+      </aside>
+
+      <main class="chat-column">
+        <section class="panel chat-panel">
+          <div class="chat-header">
+            <div>
+              <div class="panel-label">Conversation</div>
+              <h2 class="panel-title">当前对话</h2>
+            </div>
+            <div id="connection-pill" class="status-pill">连接中</div>
+          </div>
+          <div id="messages" class="messages"></div>
+          <form id="composer" class="composer">
+            <label class="composer-label" for="message-input">发送给 agent</label>
+            <textarea
+              id="message-input"
+              name="message"
+              rows="4"
+              placeholder="输入你的问题，Agent 会实时展示文本与工具执行轨迹。"
+            ></textarea>
+            <div class="composer-actions">
+              <span id="composer-hint" class="composer-hint"></span>
+              <button id="send-button" class="primary-button" type="submit">
+                发送
+              </button>
+            </div>
+          </form>
+        </section>
+      </main>
+
+      <aside class="timeline-column">
+        <section class="panel timeline-panel">
+          <div class="chat-header">
+            <div>
+              <div class="panel-label">Execution</div>
+              <h2 class="panel-title">执行时间线</h2>
+            </div>
+          </div>
+          <div id="timeline" class="timeline"></div>
+        </section>
+      </aside>
+    </div>
+  </body>
+</html>
