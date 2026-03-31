@@ -35,6 +35,7 @@ claude-agent-sdk-demo/
 **左侧边栏**
 - Session 状态（ID、Claude Session ID、创建时间）
 - 连接状态指示（已连接 / 执行中 / 错误，附动画）
+- `Loaded Instructions` 面板：显示当前 Claude session 通过 `InstructionsLoaded` hook 观测到的已加载指令文件
 - Capabilities 折叠面板：环境配置、MCP 服务器连接状态、Skills & Agents 列表
 
 **中间主区**
@@ -90,6 +91,13 @@ uv run python main.py
 | `permission_mode` | `bypassPermissions` | 跳过权限确认 |
 | `max_turns` | `8` | 单次对话最大轮数 |
 | `include_partial_messages` | `True` | 开启流式增量消息 |
+
+## InstructionsLoaded 观测
+
+- 项目内置了 `.claude/settings.json`，注册 `InstructionsLoaded` hook
+- hook 脚本位于 `.claude/hooks/log_instructions_loaded.py`
+- 运行时日志会写入 `.claude/runtime/instructions_loaded.jsonl`（已加入 `.gitignore`）
+- 左侧 `Loaded Instructions` 面板会按当前 Web session 的创建时间过滤并汇总这些事件，展示 `CLAUDE.md`、`.claude/rules/*.md` 和 `@include` 导入文件
 
 ## 边界说明
 

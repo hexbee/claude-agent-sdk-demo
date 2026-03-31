@@ -257,6 +257,72 @@ button, textarea, input {
 .error-icon { flex-shrink: 0; margin-top: 1px; color: var(--red); }
 .is-hidden  { display: none !important; }
 
+/* Loaded instructions */
+.instructions-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.instruction-empty {
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+}
+
+.instruction-empty-text {
+  display: block;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+.instruction-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+}
+
+.instruction-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.instruction-path {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.instruction-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.instruction-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.instruction-detail {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-2);
+  word-break: break-word;
+}
+
 /* Capabilities */
 .capabilities {
   display: flex;

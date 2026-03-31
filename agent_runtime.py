@@ -12,6 +12,7 @@ from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITra
 DEFAULT_SETTING_SOURCES = ["user", "project"]
 DEFAULT_PERMISSION_MODE = "bypassPermissions"
 DEFAULT_MAX_TURNS = 8
+INSTRUCTION_LOAD_LOG = Path(".claude/runtime/instructions_loaded.jsonl")
 
 
 def project_root() -> Path:
@@ -20,6 +21,11 @@ def project_root() -> Path:
 
 def resolve_user_settings() -> Path:
     return Path(os.path.expanduser("~/.claude/settings.json"))
+
+
+def resolve_instruction_load_log(cwd: str | Path | None = None) -> Path:
+    base_dir = Path(cwd).expanduser().resolve() if cwd else project_root()
+    return base_dir / INSTRUCTION_LOAD_LOG
 
 
 def ensure_settings_file(settings_path: str | Path | None = None) -> Path:
@@ -149,6 +155,162 @@ def load_settings_summary(settings_path: str | Path | None = None) -> dict[str, 
         _collect_recursive_mapping_keys(payload, "mcpServers")
     )
     return summary
+
+
+def _is_relative_to(candidate: Path, base: Path) -> bool:
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def _display_instruction_path(path_value: str | None, *, repo_root: Path) -> str | None:
+    if not path_value:
+        return None
+
+    try:
+        candidate = Path(path_value).expanduser().resolve()
+    except OSError:
+        return path_value
+
+    home_dir = Path.home().resolve()
+    if _is_relative_to(candidate, repo_root):
+        relative = candidate.relative_to(repo_root)
+        return f"./{relative.as_posix()}" if relative.parts else "."
+    if _is_relative_to(candidate, home_dir):
+        relative = candidate.relative_to(home_dir)
+        return f"~/{relative.as_posix()}" if relative.parts else "~"
+    return str(candidate)
+
+
+def read_instruction_load_entries(
+    log_path: str | Path | None = None,
+    *,
+    since_ms: int | None = None,
+    cwd: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    path = Path(log_path).expanduser() if log_path else resolve_instruction_load_log(cwd)
+    if not path.is_file():
+        return []
+
+    repo_root = Path(cwd).expanduser().resolve() if cwd else project_root()
+    entries: list[dict[str, Any]] = []
+
+    with path.open(encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+
+            timestamp_ms = payload.get("timestamp_ms")
+            if not isinstance(timestamp_ms, int):
+                continue
+            if since_ms is not None and timestamp_ms < since_ms:
+                continue
+
+            event_cwd = payload.get("cwd")
+            if isinstance(event_cwd, str) and event_cwd.strip():
+                try:
+                    resolved_event_cwd = Path(event_cwd).expanduser().resolve()
+                except OSError:
+                    continue
+                if not (
+                    _is_relative_to(resolved_event_cwd, repo_root)
+                    or _is_relative_to(repo_root, resolved_event_cwd)
+                ):
+                    continue
+
+            entries.append(payload)
+
+    return entries
+
+
+def summarize_instruction_load_entries(
+    entries: list[dict[str, Any]],
+    *,
+    repo_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    resolved_repo_root = (
+        Path(repo_root).expanduser().resolve() if repo_root else project_root()
+    )
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for entry in sorted(entries, key=lambda item: int(item.get("timestamp_ms", 0))):
+        file_path = entry.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            continue
+
+        timestamp_ms = int(entry.get("timestamp_ms", 0))
+        load_reason = entry.get("load_reason")
+        memory_type = entry.get("memory_type")
+        parent_file_path = entry.get("parent_file_path")
+        trigger_file_path = entry.get("trigger_file_path")
+        globs = entry.get("globs") if isinstance(entry.get("globs"), list) else []
+
+        summary = grouped.get(file_path)
+        if summary is None:
+            summary = {
+                "id": file_path,
+                "file_path": file_path,
+                "display_path": _display_instruction_path(
+                    file_path,
+                    repo_root=resolved_repo_root,
+                )
+                or file_path,
+                "memory_type": memory_type if isinstance(memory_type, str) else "",
+                "load_reasons": [],
+                "load_count": 0,
+                "loaded_at": timestamp_ms,
+                "parent_file_path": None,
+                "parent_display_path": None,
+                "trigger_file_path": None,
+                "trigger_display_path": None,
+                "globs": [],
+            }
+            grouped[file_path] = summary
+
+        summary["load_count"] += 1
+        if isinstance(load_reason, str) and load_reason and load_reason not in summary["load_reasons"]:
+            summary["load_reasons"].append(load_reason)
+        if isinstance(globs, list):
+            for glob_value in globs:
+                if isinstance(glob_value, str) and glob_value and glob_value not in summary["globs"]:
+                    summary["globs"].append(glob_value)
+
+        if timestamp_ms >= int(summary.get("loaded_at", 0)):
+            summary["loaded_at"] = timestamp_ms
+            if isinstance(memory_type, str) and memory_type:
+                summary["memory_type"] = memory_type
+            if isinstance(parent_file_path, str) and parent_file_path:
+                summary["parent_file_path"] = parent_file_path
+                summary["parent_display_path"] = _display_instruction_path(
+                    parent_file_path,
+                    repo_root=resolved_repo_root,
+                )
+            else:
+                summary["parent_file_path"] = None
+                summary["parent_display_path"] = None
+            if isinstance(trigger_file_path, str) and trigger_file_path:
+                summary["trigger_file_path"] = trigger_file_path
+                summary["trigger_display_path"] = _display_instruction_path(
+                    trigger_file_path,
+                    repo_root=resolved_repo_root,
+                )
+            else:
+                summary["trigger_file_path"] = None
+                summary["trigger_display_path"] = None
+
+    return sorted(
+        grouped.values(),
+        key=lambda item: (-int(item.get("loaded_at", 0)), item.get("display_path", "")),
+    )
 
 
 def build_agent_options(

@@ -23,6 +23,7 @@
     sessionInfo:    $("session-info"),
     errorArea:      $("error-area"),
     errorText:      $("error-text"),
+    loadedInstructions: $("loaded-instructions"),
     capabilities:   $("capabilities"),
     statusBadge:    $("status-badge"),
     turnStats:      $("turn-stats"),
@@ -231,6 +232,65 @@
       el.errorArea.classList.add("is-hidden");
       el.errorText.textContent = "";
     }
+  }
+
+  // ─── Render: Loaded instructions ─────────────────────────────────────────────
+  function renderLoadedInstructions() {
+    const caps = state.capabilities || {};
+    const items = caps.loaded_instructions || [];
+    const error = caps.loaded_instructions_error || "";
+
+    if (error) {
+      el.loadedInstructions.innerHTML = `
+        <div class="instruction-empty">
+          <span class="instruction-empty-text">${esc(error)}</span>
+        </div>`;
+      return;
+    }
+
+    if (items.length === 0) {
+      el.loadedInstructions.innerHTML = `
+        <div class="instruction-empty">
+          <span class="instruction-empty-text">等待 InstructionsLoaded 事件</span>
+        </div>`;
+      return;
+    }
+
+    el.loadedInstructions.innerHTML = items.map((item) => {
+      const sourceTag = item.memory_type
+        ? `<span class="tag tag-blue">${esc(item.memory_type)}</span>`
+        : "";
+      const reasonTags = (item.load_reasons || [])
+        .map((reason) => `<span class="tag tag-muted">${esc(reason)}</span>`)
+        .join("");
+
+      let detailText = "";
+      if (item.parent_display_path) {
+        detailText = `include 来自 ${item.parent_display_path}`;
+      } else if (item.trigger_display_path) {
+        detailText = `由 ${item.trigger_display_path} 触发`;
+      } else if ((item.globs || []).length > 0) {
+        detailText = `paths: ${(item.globs || []).join(", ")}`;
+      }
+
+      return `
+        <div class="instruction-item">
+          <div class="instruction-head">
+            <div class="instruction-path" title="${esc(item.file_path || item.display_path || "")}">
+              ${esc(item.display_path || item.file_path || "未知文件")}
+            </div>
+            <div class="instruction-tags">
+              ${sourceTag}
+              ${reasonTags}
+            </div>
+          </div>
+          <div class="instruction-meta">
+            <span>${esc(fmtTime(item.loaded_at) || "刚刚")}</span>
+            ${item.load_count > 1 ? `<span>${esc(`加载 ${item.load_count} 次`)}</span>` : ""}
+          </div>
+          ${detailText ? `<div class="instruction-detail">${esc(detailText)}</div>` : ""}
+        </div>`;
+    }).join("");
   }
 
   // ─── Render: Capabilities ────────────────────────────────────────────────────
@@ -648,6 +708,7 @@
     renderStatusBadge();
     renderSession();
     renderError();
+    renderLoadedInstructions();
     renderCapabilities();
     renderMessages();
     renderTimeline();

@@ -30,8 +30,11 @@ from agent_runtime import (
     build_agent_options,
     load_settings_summary,
     project_root,
+    read_instruction_load_entries,
     resolve_cli_path,
+    resolve_instruction_load_log,
     resolve_user_settings,
+    summarize_instruction_load_entries,
 )
 
 UNCHANGED = object()
@@ -170,6 +173,7 @@ class AgentSessionWorker:
         self._repo_root = Path(repo_root or project_root()).resolve()
         self._settings_path = resolve_user_settings()
         self._settings_summary = load_settings_summary(self._settings_path)
+        self._instruction_log_path = resolve_instruction_load_log(self._repo_root)
 
         self._state_lock = threading.Lock()
         self._subscribers: set[queue.Queue[dict[str, Any]]] = set()
@@ -246,6 +250,9 @@ class AgentSessionWorker:
                 "mcp_tools": [],
                 "resolved_cli": resolved_cli,
                 "server_info": None,
+                "instruction_log_path": str(self._instruction_log_path),
+                "loaded_instructions": [],
+                "loaded_instructions_error": None,
             },
             "last_error": settings_error,
         }
@@ -405,6 +412,7 @@ class AgentSessionWorker:
                 server_info=serialize_for_json(server_info),
             )
             await self._refresh_capabilities(generation)
+            self._refresh_loaded_instructions(generation)
             return client
 
     async def _disconnect_client_quietly(self, client: ClaudeSDKClient) -> None:
@@ -444,6 +452,36 @@ class AgentSessionWorker:
             mcp_tools=sorted(mcp_tools),
         )
 
+    def _refresh_loaded_instructions(self, generation: int) -> None:
+        with self._state_lock:
+            if generation != self._generation:
+                return
+            created_at = int(self._state["session"].get("created_at", 0))
+
+        try:
+            entries = read_instruction_load_entries(
+                self._instruction_log_path,
+                since_ms=created_at,
+                cwd=self._repo_root,
+            )
+            loaded_instructions = summarize_instruction_load_entries(
+                entries,
+                repo_root=self._repo_root,
+            )
+        except Exception as exc:
+            self._update_capabilities(
+                generation,
+                loaded_instructions=[],
+                loaded_instructions_error=str(exc),
+            )
+            return
+
+        self._update_capabilities(
+            generation,
+            loaded_instructions=loaded_instructions,
+            loaded_instructions_error=None,
+        )
+
     def _capture_stderr(self, chunk: str, generation: int) -> None:
         lines = [line.strip() for line in chunk.splitlines() if line.strip()]
         if not lines:
@@ -464,6 +502,8 @@ class AgentSessionWorker:
         server_info: Any = UNCHANGED,
         mcp_servers: Any = UNCHANGED,
         mcp_tools: Any = UNCHANGED,
+        loaded_instructions: Any = UNCHANGED,
+        loaded_instructions_error: Any = UNCHANGED,
     ) -> None:
         with self._state_lock:
             if generation != self._generation:
@@ -480,6 +520,10 @@ class AgentSessionWorker:
                 capabilities["mcp_servers"] = mcp_servers
             if mcp_tools is not UNCHANGED:
                 capabilities["mcp_tools"] = mcp_tools
+            if loaded_instructions is not UNCHANGED:
+                capabilities["loaded_instructions"] = loaded_instructions
+            if loaded_instructions_error is not UNCHANGED:
+                capabilities["loaded_instructions_error"] = loaded_instructions_error
 
             payload = copy.deepcopy(capabilities)
 
@@ -542,6 +586,7 @@ class AgentSessionWorker:
                 self._handle_message(message, generation, turn_context)
 
             await self._refresh_capabilities(generation)
+            self._refresh_loaded_instructions(generation)
             if turn_context["result_error"]:
                 self._set_session_status(
                     generation,
@@ -588,6 +633,8 @@ class AgentSessionWorker:
         generation: int,
         turn_context: dict[str, Any],
     ) -> None:
+        self._refresh_loaded_instructions(generation)
+
         if isinstance(message, StreamEvent):
             delta = extract_stream_text_delta(message.event)
             if not delta:
