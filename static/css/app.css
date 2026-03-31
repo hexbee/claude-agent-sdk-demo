@@ -261,14 +261,18 @@ button, textarea, input {
 .instructions-panel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.02);
+  overflow: hidden;
 }
 
 .instruction-empty {
   padding: 12px;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-2);
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 .instruction-empty-text {
@@ -281,24 +285,25 @@ button, textarea, input {
 .instruction-item {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-2);
+  gap: 6px;
+  padding: 10px 12px;
+  border: none;
+  border-top: 1px solid var(--border-2);
+  border-radius: 0;
+  background: transparent;
 }
 
 .instruction-head {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .instruction-path {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-1);
-  line-height: 1.45;
+  color: var(--text);
+  line-height: 1.4;
   word-break: break-word;
 }
 
@@ -308,18 +313,46 @@ button, textarea, input {
   gap: 4px;
 }
 
+.instructions-panel > .instruction-item:first-child {
+  border-top: none;
+}
+
+.instructions-panel .tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.instructions-panel .tag-blue {
+  background: rgba(88,166,255,0.08);
+  border-color: transparent;
+}
+
+.instructions-panel .tag-muted {
+  background: transparent;
+  border-color: var(--border-2);
+}
+
 .instruction-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  font-size: 11px;
+  gap: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+
+.instruction-meta span + span::before {
+  content: "·";
+  margin: 0 6px;
   color: var(--text-3);
 }
 
 .instruction-detail {
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.5;
-  color: var(--text-2);
+  color: var(--text-3);
   word-break: break-word;
 }
 
@@ -399,6 +432,160 @@ details[open] .cap-chevron { transform: rotate(90deg); }
   color: var(--text-2);
   text-align: right;
   word-break: break-all;
+}
+
+.cap-tag-panel {
+  padding-top: 2px;
+}
+
+.cap-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-start;
+}
+
+.cap-empty-text {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.mcp-server-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-2);
+}
+
+.mcp-server-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mcp-server-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-server-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cap-body > .mcp-server-card:first-child {
+  border-top: none;
+  padding-top: 2px;
+}
+
+.mcp-server-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+
+.mcp-server-meta-item {
+  white-space: nowrap;
+}
+
+.mcp-server-meta-item + .mcp-server-meta-item::before {
+  content: "·";
+  margin: 0 6px;
+  color: var(--text-3);
+}
+
+.mcp-server-meta-item--status.is-connected {
+  color: var(--green);
+}
+
+.mcp-server-meta-item--status.is-error {
+  color: var(--red);
+}
+
+.mcp-server-meta-item--status.is-disconnected {
+  color: var(--text-2);
+}
+
+.mcp-server-tools-more {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mcp-server-tools-more[open] .mcp-server-tools-toggle {
+  order: 2;
+}
+
+.mcp-server-tools-toggle {
+  cursor: pointer;
+  list-style: none;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-3);
+  line-height: 1.4;
+  padding-left: 2px;
+  opacity: 0.9;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+
+.mcp-tool-name {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-tool-name--empty {
+  font-family: inherit;
+  color: var(--text-3);
+}
+
+.mcp-server-tools-toggle-expanded {
+  display: none;
+}
+
+.mcp-server-tools-more[open] .mcp-server-tools-toggle-collapsed {
+  display: none;
+}
+
+.mcp-server-tools-more[open] .mcp-server-tools-toggle-expanded {
+  display: inline;
+}
+
+.mcp-server-tools-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.mcp-server-tools-toggle:hover {
+  color: var(--text-2);
+  opacity: 1;
+}
+
+.mcp-server-tools-hidden {
+  padding-top: 2px;
+}
+
+.mcp-server-tools-more[open] .mcp-server-tools-hidden {
+  order: 1;
 }
 
 .tag-list {

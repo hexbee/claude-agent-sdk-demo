@@ -299,6 +299,15 @@
     return items.map((v) => `<span class="tag ${cls}">${esc(v)}</span>`).join("");
   }
 
+  function mcpToolListHtml(items, empty = "暂无工具") {
+    if (!items || items.length === 0) {
+      return `<span class="mcp-tool-name mcp-tool-name--empty">${esc(empty)}</span>`;
+    }
+    return items
+      .map((v) => `<span class="mcp-tool-name" title="${esc(v)}">${esc(v)}</span>`)
+      .join("");
+  }
+
   function capGroup(title, countOrBadge, bodyHtml, open = false) {
     return `
       <details class="cap-group" ${open ? "open" : ""}>
@@ -315,14 +324,28 @@
       </details>`;
   }
 
+  function capTagPanel(items, cls, emptyText) {
+    if (!items || items.length === 0) {
+      return `<div class="cap-tag-panel"><span class="cap-empty-text">${esc(emptyText)}</span></div>`;
+    }
+    return `
+      <div class="cap-tag-panel">
+        <div class="cap-tag-list">${tagHtml(items, cls, emptyText)}</div>
+      </div>`;
+  }
+
   function renderCapabilities() {
     const caps = state.capabilities || {};
     const mcpServers   = caps.mcp_servers || [];
-    const mcpTools     = caps.mcp_tools || [];
     const knownSkills  = caps.known_skills || [];
     const agents       = caps.configured_agents || [];
 
     const connected = mcpServers.filter((s) => s.status === "connected").length;
+    const mcpToolOpenStates = {};
+    el.capabilities.querySelectorAll("details.mcp-server-tools-more").forEach((d) => {
+      const serverKey = d.dataset.serverKey;
+      if (serverKey) mcpToolOpenStates[serverKey] = d.open;
+    });
 
     // Config group
     const configBody = `
@@ -338,38 +361,52 @@
     // MCP group
     const mcpServerRows = mcpServers.length
       ? mcpServers.map((srv) => {
-          const statusCls =
-            srv.status === "connected" ? "tag-green" :
-            srv.status === "error"     ? "tag tag-muted" : "tag tag-muted";
+          const tools = srv.tools || [];
+          const status = srv.status || "?";
+          const scope = srv.scope || "";
+          const displayName = srv.name || srv.server_info?.name || "?";
+          const titleText =
+            srv.server_info?.name && srv.server_info.name !== displayName
+              ? `服务器标识: ${srv.server_info.name}`
+              : displayName;
+          const serverKey = srv.name || displayName;
+          const visibleTools = tools.slice(0, 2);
+          const hiddenTools = tools.slice(2);
+          const isExpanded = Boolean(mcpToolOpenStates[serverKey]);
+          const moreTools = hiddenTools.length
+            ? `
+              <details class="mcp-server-tools-more" data-server-key="${esc(serverKey)}" ${isExpanded ? "open" : ""}>
+                <summary class="mcp-server-tools-toggle">
+                  <span class="mcp-server-tools-toggle-collapsed">还有 ${hiddenTools.length} 个工具</span>
+                  <span class="mcp-server-tools-toggle-expanded">收起</span>
+                </summary>
+                <div class="mcp-server-tools mcp-server-tools-hidden">
+                  ${mcpToolListHtml(hiddenTools, "暂无工具")}
+                </div>
+              </details>`
+            : "";
           return `
-            <div class="cap-row">
-              <span class="cap-key">${esc(srv.name || "?")}</span>
-              <span class="tag ${statusCls}">${esc(srv.status || "?")} · ${srv.tool_count ?? 0} tools</span>
+            <div class="mcp-server-card">
+              <div class="mcp-server-head">
+                <div class="mcp-server-title" title="${esc(titleText)}">${esc(displayName)}</div>
+                <div class="mcp-server-meta">
+                  <span class="mcp-server-meta-item mcp-server-meta-item--status is-${esc(status)}">${esc(status)}</span>
+                  <span class="mcp-server-meta-item">${tools.length} tools</span>
+                  ${scope ? `<span class="mcp-server-meta-item">${esc(scope)}</span>` : ""}
+                </div>
+              </div>
+              <div class="mcp-server-tools">
+                ${mcpToolListHtml(visibleTools, "暂无工具")}
+              </div>
+              ${moreTools}
             </div>`;
         }).join("")
       : `<div class="cap-row"><span class="cap-key" style="color:var(--text-3)">暂无已连接的 MCP</span></div>`;
 
-    const mcpBody = `
-      <div class="cap-row">
-        <span class="cap-key">连接状态</span>
-        <span class="cap-val">${connected}/${mcpServers.length} 在线</span>
-      </div>
-      ${mcpServerRows}
-      <div class="cap-row" style="margin-top:4px">
-        <span class="cap-key">全部工具</span>
-        <span class="tag-list">${tagHtml(mcpTools, "tag-green", "暂无")}</span>
-      </div>`;
+    const mcpBody = `${mcpServerRows}`;
 
-    // Skills & Agents
-    const saBody = `
-      <div class="cap-row">
-        <span class="cap-key">Skills</span>
-        <span class="tag-list">${tagHtml(knownSkills, "tag-orange", "未从配置提取到")}</span>
-      </div>
-      <div class="cap-row">
-        <span class="cap-key">Agents</span>
-        <span class="tag-list">${tagHtml(agents, "tag-purple", "未配置")}</span>
-      </div>`;
+    const skillsBody = capTagPanel(knownSkills, "tag-orange", "未从配置提取到");
+    const agentsBody = capTagPanel(agents, "tag-purple", "未配置");
 
     // Snapshot current open states before replacing DOM (key = group title)
     const openStates = {};
@@ -384,7 +421,8 @@
     el.capabilities.innerHTML =
       capGroup("环境配置", caps.settings_exists ? "OK" : "!", configBody, defaultOpen("环境配置", true)) +
       capGroup("MCP 服务器", `${connected}/${mcpServers.length}`, mcpBody, defaultOpen("MCP 服务器", mcpServers.length > 0)) +
-      capGroup("Skills & Agents", knownSkills.length + agents.length, saBody, defaultOpen("Skills & Agents", true));
+      capGroup("Skills", knownSkills.length, skillsBody, defaultOpen("Skills", true)) +
+      capGroup("Agents", agents.length, agentsBody, defaultOpen("Agents", true));
   }
 
   // ─── Render: Messages ────────────────────────────────────────────────────────
