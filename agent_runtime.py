@@ -87,6 +87,41 @@ def _collect_recursive_mapping_keys(node: Any, key_name: str) -> set[str]:
     return results
 
 
+def _scan_agent_markdown_dirs(settings_path: Path, cwd: Path | None = None) -> list[str]:
+    """Scan ~/.claude/agents/ and .claude/agents/ for subagent Markdown files.
+
+    Returns a sorted list of agent names extracted from the `name:` frontmatter
+    field, falling back to the stem of the filename when the field is absent.
+    """
+    dirs: list[Path] = [
+        settings_path.parent / "agents",
+    ]
+    if cwd:
+        dirs.append(Path(cwd) / ".claude" / "agents")
+    else:
+        dirs.append(project_root() / ".claude" / "agents")
+
+    names: set[str] = set()
+    for agents_dir in dirs:
+        if not agents_dir.is_dir():
+            continue
+        for md_file in agents_dir.glob("*.md"):
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            name: str | None = None
+            if content.startswith("---"):
+                end = content.find("---", 3)
+                if end != -1:
+                    for line in content[3:end].splitlines():
+                        if line.startswith("name:"):
+                            name = line[5:].strip().strip('"').strip("'")
+                            break
+            names.add(name if name else md_file.stem)
+    return sorted(names)
+
+
 def load_settings_summary(settings_path: str | Path | None = None) -> dict[str, Any]:
     path = Path(settings_path).expanduser() if settings_path else resolve_user_settings()
     summary: dict[str, Any] = {
@@ -105,9 +140,11 @@ def load_settings_summary(settings_path: str | Path | None = None) -> dict[str, 
         return summary
 
     summary["known_skills"] = sorted(_collect_recursive_strings(payload, "skills"))
-    summary["configured_agents"] = sorted(
-        _collect_recursive_mapping_keys(payload, "agents")
-    )
+
+    agents_from_settings = sorted(_collect_recursive_mapping_keys(payload, "agents"))
+    agents_from_files = _scan_agent_markdown_dirs(path)
+    summary["configured_agents"] = sorted(set(agents_from_settings) | set(agents_from_files))
+
     summary["configured_mcp_servers"] = sorted(
         _collect_recursive_mapping_keys(payload, "mcpServers")
     )
