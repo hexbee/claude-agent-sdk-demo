@@ -634,7 +634,8 @@ details[open] .cap-chevron { transform: rotate(90deg); }
 .chat-header-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .chat-title {
@@ -642,6 +643,40 @@ details[open] .cap-chevron { transform: rotate(90deg); }
   font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+/* 合并的 Session IDs - 低调显示 */
+.session-ids {
+  font-size: 11px;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.session-id-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  background: var(--bg-2);
+  border-radius: 4px;
+  border: 1px solid var(--border-2);
+}
+
+.session-id-label {
+  color: var(--text-3);
+  opacity: 0.7;
+}
+
+.session-id-value {
+  color: var(--text-2);
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-badge {

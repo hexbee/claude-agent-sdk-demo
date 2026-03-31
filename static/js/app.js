@@ -20,12 +20,12 @@
 
   const el = {
     connectionDot:  $("connection-dot"),
-    sessionInfo:    $("session-info"),
     errorArea:      $("error-area"),
     errorText:      $("error-text"),
     loadedInstructions: $("loaded-instructions"),
     capabilities:   $("capabilities"),
     statusBadge:    $("status-badge"),
+    sessionIds:     $("session-ids"),
     turnStats:      $("turn-stats"),
     messages:       $("messages"),
     timeline:       $("timeline"),
@@ -187,40 +187,27 @@
     el.statusBadge.className = `status-badge is-${status}`;
   }
 
-  // ─── Render: Session info ─────────────────────────────────────────────────────
-  function renderSession() {
+  // ─── Render: Session IDs (merged, low-profile) ───────────────────────────────
+  function renderSessionIds() {
     const s = state.session;
     if (!s) {
-      el.sessionInfo.innerHTML = '<div class="info-skeleton"></div>';
+      el.sessionIds.innerHTML = '<div class="info-skeleton" style="width: 120px; height: 14px;"></div>';
       return;
     }
 
-    const statusClass =
-      s.status === "idle"   ? "is-active"  :
-      s.status === "running"? "is-busy"    :
-      s.status === "error"  ? "is-error"   : "is-pending";
+    const sessionId = s.id ? `…${s.id.slice(-8)}` : "—";
+    const claudeId = s.claude_session_id ? `…${s.claude_session_id.slice(-8)}` : "未建立";
 
-    const statusLabel =
-      s.status === "idle"         ? "就绪"   :
-      s.status === "running"      ? "执行中" :
-      s.status === "error"        ? "错误"   :
-      s.status === "needs_config" ? "未配置" :
-      s.status === "connecting"   ? "连接中" : (s.status || "未知");
-
-    const rows = [
-      ["会话 ID", s.id ? `…${s.id.slice(-8)}` : "—"],
-      ["Claude 会话", s.claude_session_id ? `…${s.claude_session_id.slice(-8)}` : "未建立"],
-      ["状态", statusLabel, statusClass],
-      ["创建时间", fmtTime(s.created_at)],
-    ];
-
-    el.sessionInfo.innerHTML = rows
-      .map(([k, v, cls]) => `
-        <div class="info-row">
-          <span class="info-key">${esc(k)}</span>
-          <span class="info-val ${cls || ""}">${esc(v)}</span>
-        </div>`)
-      .join("");
+    el.sessionIds.innerHTML = `
+      <div class="session-id-item">
+        <span class="session-id-label">会话:</span>
+        <span class="session-id-value" title="${esc(s.id || "")}">${esc(sessionId)}</span>
+      </div>
+      <span class="session-id-divider" style="color: var(--text-3); opacity: 0.5;">|</span>
+      <div class="session-id-item">
+        <span class="session-id-label">Claude:</span>
+        <span class="session-id-value" title="${esc(s.claude_session_id || "")}">${esc(claudeId)}</span>
+      </div>`;
   }
 
   // ─── Render: Error ────────────────────────────────────────────────────────────
@@ -744,7 +731,7 @@
   function renderAll() {
     renderConnection();
     renderStatusBadge();
-    renderSession();
+    renderSessionIds();
     renderError();
     renderLoadedInstructions();
     renderCapabilities();
