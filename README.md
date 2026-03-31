@@ -3,100 +3,110 @@
 一个最小可运行的 Python Demo，包含：
 
 - 一个 CLI 示例，用来通过 `claude-agent-sdk` 调起 Claude CLI
-- 一个基于 Flask + HTML + CSS + JS 的本地 Agent 页面
-- 对多轮对话、工具调用、MCP 工具和 skills 的可视化展示
+- 一个基于 Flask + SSE + 原生 JS 的本地 Agent Web 页面
+- 对多轮对话、工具调用（内置 / MCP）和 Skills 的实时可视化
 
-## 项目说明
+## 项目结构
 
-这个仓库现在主要包含两部分：
+```
+claude-agent-sdk-demo/
+├── app.py              # Flask 应用，REST + SSE 接口
+├── agent_worker.py     # 单 session 状态机，管理 claude-agent-sdk 生命周期
+├── agent_runtime.py    # SDK 选项构建、settings 读取、CLI 路径解析
+├── main.py             # CLI 独立入口（不含 Web）
+├── templates/
+│   └── index.html      # 单页 HTML 模板
+└── static/
+    ├── css/app.css     # 全量样式
+    └── js/app.js       # 前端逻辑（SSE 监听、增量渲染、Markdown）
+```
 
-1. CLI Demo
+## 功能说明
 
-- 读取用户本地 Claude 配置：`~/.claude/settings.json`
-- 使用 `claude-agent-sdk` 创建查询请求
-- 打印实际解析到的 Claude CLI 路径
-- 向 Claude 发送一个简单 prompt，列出当前可用的 skills
+### CLI Demo (`main.py`)
 
-2. Flask Agent UI
+- 读取 `~/.claude/settings.json`，解析本地 Claude CLI 路径
+- 通过 `claude-agent-sdk` 发送单次 prompt，打印 Assistant 回复
 
-- 支持单个活动 session 的多轮对话
-- 支持 `新建 Session`
-- Assistant 文本流式展示
-- 右侧执行时间线展示工具调用、任务进度和工具结果
-- 自动区分 Claude 侧 MCP 工具与内置工具
-- skills 以 best-effort 方式展示：优先显示 Claude 初始化信息和已知 skill 名称，并在时间线上标记可识别的 skill 痕迹
+### Flask Agent Web UI (`app.py`)
 
-入口文件是 [main.py](/var/fpwork/aujia/hzlinc45-5gl3/claude-agent-sdk-demo/main.py)。
-Web 入口文件是 [app.py](/var/fpwork/aujia/hzlinc45-5gl3/claude-agent-sdk-demo/app.py)。
+三列布局，实时展示 Agent 执行过程：
+
+**左侧边栏**
+- Session 状态（ID、Claude Session ID、创建时间）
+- 连接状态指示（已连接 / 执行中 / 错误，附动画）
+- Capabilities 折叠面板：环境配置、MCP 服务器连接状态、Skills & Agents 列表
+
+**中间主区**
+- 多轮聊天，用户消息与 Assistant 回复实时流式展示
+- Assistant 回复支持 **Markdown 渲染**（代码块、表格、列表等）
+- 流式生成时显示闪烁光标动画
+- 输入框自适应高度，`Enter` 发送，`Shift+Enter` 换行
+
+**右侧时间线**
+- 工具调用（内置工具 / MCP 工具）按时间线展示
+- 每项可展开查看调用输入、输出、耗时
+- 区分 `TOOL`（内置）、`MCP`、`SKILL`、`TASK` 四种类型并分色标注
+- 执行中条目自动展开，完成后保留展开状态
+
+**后端 API**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/` | 主页面 |
+| `GET` | `/api/state` | 获取当前完整状态快照 |
+| `POST` | `/api/session/new` | 新建 Session，重置对话上下文 |
+| `POST` | `/api/message` | 发送用户消息 |
+| `GET` | `/api/stream` | SSE 事件流（实时推送状态变化） |
 
 ## 环境要求
 
-- Python 3.11 或更高版本
+- Python 3.11+
 - 已安装并可用的 Claude CLI
-- 本地存在 Claude 配置文件：`~/.claude/settings.json`
-- 建议使用 `uv` 安装依赖和运行
+- `~/.claude/settings.json` 存在且有效
+- 建议使用 `uv` 管理依赖
 
-## 安装依赖
+## 安装与运行
 
 ```bash
+# 安装依赖
 uv sync
-```
 
-## 运行方式
+# 启动 Web 页面
+uv run python app.py
+# 访问 http://127.0.0.1:5000
 
-CLI:
-
-```bash
+# 或仅运行 CLI Demo
 uv run python main.py
 ```
 
-Web 页面:
+## 关键 SDK 配置
 
-```bash
-uv run python app.py
-```
+`agent_runtime.py` 中的默认运行时选项：
 
-启动 Web 页面后，访问 [http://127.0.0.1:5000](http://127.0.0.1:5000)。
+| 选项 | 值 | 说明 |
+|------|----|------|
+| `setting_sources` | `["user", "project"]` | 加载用户和项目级 settings |
+| `permission_mode` | `bypassPermissions` | 跳过权限确认 |
+| `max_turns` | `8` | 单次对话最大轮数 |
+| `include_partial_messages` | `True` | 开启流式增量消息 |
 
-## 关键配置
+## 边界说明
 
-共享运行时当前使用的 SDK 选项包括：
-
-- `setting_sources=["user", "project"]`
-- `permission_mode="bypassPermissions"`
-- `max_turns=8`
-- `include_partial_messages=True`（Web 页面流式模式）
-
-如果本地没有 Claude 配置文件，CLI 会直接抛出 `FileNotFoundError`；Web 页面会在状态区显示配置缺失。
+- Session 保存在 Flask 进程内存中，重启后不保留历史
+- MCP 服务器连接状态来自 Claude CLI 真实握手结果，未连接的服务不会出现
+- Skill 调用轨迹为 best-effort 识别，基于文本匹配，不保证完全准确
 
 ## 依赖
 
-项目依赖定义在 [pyproject.toml](/var/fpwork/aujia/hzlinc45-5gl3/claude-agent-sdk-demo/pyproject.toml)：
-
-- `claude-agent-sdk>=0.1.50`
-- `flask>=3.1.3`
-
-## 适用场景
-
-## Web 页面说明
-
-页面主要分为三块：
-
-- 左侧：session 状态、settings 路径、MCP 与 skills 能力概览
-- 中间：聊天对话区和输入框
-- 右侧：执行时间线，可展开查看工具输入、输出、耗时和任务信息
-
-当前边界：
-
-- session 保存在 Flask 进程内，重启服务后不会保留
-- 外部 MCP 只展示 Claude Agent SDK / Claude CLI 真正连接成功的服务
-- skill 调用轨迹是 best-effort，不保证每一次都能被精确识别
+```toml
+claude-agent-sdk >= 0.1.50
+flask >= 3.1.3
+```
 
 ## 适用场景
 
-这个仓库适合用于：
-
-- 验证本地 Claude CLI 与 Python SDK 是否能正常联通
-- 参考最小化的 SDK 调用方式
-- 快速搭一个本地 Agent 调试页面
-- 在此基础上继续扩展自定义 prompt、transport、session 存储或更完整的前端交互
+- 验证本地 Claude CLI 与 Python SDK 是否正常联通
+- 参考最小化 SDK 调用方式
+- 快速搭建本地 Agent 调试页面，观察工具调用和 MCP 行为
+- 在此基础上扩展自定义 prompt、session 持久化或更完整的前端交互

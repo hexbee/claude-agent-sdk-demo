@@ -1,4 +1,8 @@
+/* global marked */
 (function () {
+  "use strict";
+
+  // ─── State ───────────────────────────────────────────────────────────────────
   const state = {
     session: null,
     messages: [],
@@ -7,492 +11,649 @@
     last_error: null,
   };
 
-  let connectionState = "connecting";
-  let stream = null;
-  let newSessionPending = false;
+  let connectionState = "connecting"; // connecting | open | error
+  let sse = null;
+  let newSessionLock = false;
 
-  const elements = {
-    sessionMeta: document.getElementById("session-meta"),
-    capabilitiesPanel: document.getElementById("capabilities-panel"),
-    errorBanner: document.getElementById("error-banner"),
-    connectionPill: document.getElementById("connection-pill"),
-    messages: document.getElementById("messages"),
-    timeline: document.getElementById("timeline"),
-    composer: document.getElementById("composer"),
-    composerHint: document.getElementById("composer-hint"),
-    messageInput: document.getElementById("message-input"),
-    sendButton: document.getElementById("send-button"),
-    newSessionButton: document.getElementById("new-session-button"),
+  // ─── DOM refs ────────────────────────────────────────────────────────────────
+  const $ = (id) => document.getElementById(id);
+
+  const el = {
+    connectionDot:  $("connection-dot"),
+    sessionInfo:    $("session-info"),
+    errorArea:      $("error-area"),
+    errorText:      $("error-text"),
+    capabilities:   $("capabilities"),
+    statusBadge:    $("status-badge"),
+    turnStats:      $("turn-stats"),
+    messages:       $("messages"),
+    timeline:       $("timeline"),
+    timelineCount:  $("timeline-count"),
+    composer:       $("composer"),
+    composerHint:   $("composer-hint"),
+    msgInput:       $("msg-input"),
+    sendBtn:        $("send-btn"),
+    newSessionBtn:  $("new-session-btn"),
   };
 
-  function escapeHtml(value) {
-    return String(value)
+  // ─── Helpers ─────────────────────────────────────────────────────────────────
+  function esc(v) {
+    return String(v)
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
   }
 
-  function formatTime(timestamp) {
-    if (!timestamp) {
-      return "未知";
-    }
-    return new Date(timestamp).toLocaleTimeString("zh-CN", {
+  function fmtTime(ts) {
+    if (!ts) return "";
+    return new Date(ts).toLocaleTimeString("zh-CN", {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
     });
   }
 
-  function formatDateTime(timestamp) {
-    if (!timestamp) {
-      return "未知";
+  function fmtMs(ms) {
+    if (ms == null) return "";
+    if (ms < 1000) return `${ms}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function renderMd(text) {
+    if (typeof marked !== "undefined") {
+      try {
+        return marked.parse(String(text || ""), { breaks: true, gfm: true });
+      } catch (_) { /* fall through */ }
     }
-    return new Date(timestamp).toLocaleString("zh-CN", {
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    return `<span style="white-space:pre-wrap">${esc(text)}</span>`;
   }
 
-  function fetchJson(url, options = {}) {
-    return fetch(url, {
-      headers: {
-        "Content-Type": "application/json",
-      },
-      ...options,
-    }).then(async (response) => {
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const message = payload.error || "请求失败。";
-        throw new Error(message);
-      }
-      return payload;
+  async function fetchJson(url, opts = {}) {
+    const res = await fetch(url, {
+      headers: { "Content-Type": "application/json" },
+      ...opts,
     });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    return body;
   }
 
-  function upsertById(list, item) {
-    const index = list.findIndex((candidate) => candidate.id === item.id);
-    if (index >= 0) {
-      list[index] = { ...list[index], ...item };
-      return list[index];
+  function upsert(list, item) {
+    const idx = list.findIndex((x) => x.id === item.id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...item };
+      return list[idx];
     }
     list.push(item);
     return item;
   }
 
-  function applySnapshot(snapshot) {
-    state.session = snapshot.session || null;
-    state.messages = snapshot.messages || [];
-    state.timeline = snapshot.timeline || [];
-    state.capabilities = snapshot.capabilities || {};
-    state.last_error = snapshot.last_error || null;
+  // ─── State apply ─────────────────────────────────────────────────────────────
+  function applySnapshot(snap) {
+    state.session      = snap.session      || null;
+    state.messages     = snap.messages     || [];
+    state.timeline     = snap.timeline     || [];
+    state.capabilities = snap.capabilities || {};
+    state.last_error   = snap.last_error   || null;
   }
 
-  function applyEvent(event) {
-    switch (event.type) {
+  function applyEvent(ev) {
+    switch (ev.type) {
       case "session_reset":
-        applySnapshot(event.state);
+        applySnapshot(ev.state);
         break;
+
       case "session_status":
-        state.session = event.session || state.session;
-        if (Object.prototype.hasOwnProperty.call(event, "last_error")) {
-          state.last_error = event.last_error;
-        }
+        if (ev.session) state.session = ev.session;
+        if (Object.prototype.hasOwnProperty.call(ev, "last_error"))
+          state.last_error = ev.last_error;
         break;
+
       case "capabilities":
-        state.capabilities = event.capabilities || {};
+        state.capabilities = ev.capabilities || {};
         break;
+
       case "user_message":
-        upsertById(state.messages, event.message);
-        break;
       case "assistant_message":
-        upsertById(state.messages, event.message);
+        upsert(state.messages, ev.message);
         break;
+
       case "assistant_delta": {
-        const fallbackMessage = {
-          id: event.message_id,
+        const placeholder = {
+          id: ev.message_id,
           role: "assistant",
           text: "",
           status: "streaming",
-          created_at: event.timestamp,
+          created_at: ev.timestamp,
         };
-        const message = upsertById(state.messages, fallbackMessage);
-        message.text = `${message.text || ""}${event.delta || ""}`;
-        message.status = message.status || "streaming";
+        const msg = upsert(state.messages, placeholder);
+        msg.text = `${msg.text || ""}${ev.delta || ""}`;
+        msg.status = msg.status || "streaming";
         break;
       }
+
       case "tool_started":
       case "tool_finished":
       case "task_started":
       case "task_progress":
       case "task_notification":
       case "skill_activity":
-        upsertById(state.timeline, event.entry);
+        upsert(state.timeline, ev.entry);
         break;
+
       case "turn_result":
-        if (state.session && event.result?.session_id) {
-          state.session = {
-            ...state.session,
-            claude_session_id: event.result.session_id,
-          };
+        if (ev.result && state.session) {
+          if (ev.result.session_id)
+            state.session = { ...state.session, claude_session_id: ev.result.session_id };
         }
         break;
+
       case "error":
-        state.last_error = event.error || "发生未知错误。";
-        break;
-      default:
+        state.last_error = ev.error || "发生未知错误。";
         break;
     }
   }
 
-  function renderChipList(values, emptyText = "暂无") {
-    if (!values || values.length === 0) {
-      return `<span class="chip empty">${escapeHtml(emptyText)}</span>`;
-    }
-    return values
-      .map((value) => `<span class="chip">${escapeHtml(value)}</span>`)
-      .join("");
+  // ─── Render: Connection dot ───────────────────────────────────────────────────
+  function renderConnection() {
+    el.connectionDot.className = "connection-dot";
+    if (connectionState === "open")       el.connectionDot.classList.add("is-open");
+    else if (connectionState === "error") el.connectionDot.classList.add("is-error");
+    else                                  el.connectionDot.classList.add("is-connecting");
+
+    const labels = { open: "已连接", error: "重连中", connecting: "连接中" };
+    el.connectionDot.title = labels[connectionState] || "未知";
   }
 
-  function renderSessionMeta() {
-    if (!state.session) {
-      elements.sessionMeta.innerHTML = "";
+  // ─── Render: Status badge ─────────────────────────────────────────────────────
+  function renderStatusBadge() {
+    const s = state.session;
+    if (!s) {
+      el.statusBadge.textContent = "加载中";
+      el.statusBadge.className = "status-badge";
+      return;
+    }
+    const status = s.busy ? "running" : (s.status || "");
+    const labels = {
+      idle:          "就绪",
+      running:       "执行中",
+      error:         "错误",
+      needs_config:  "未配置",
+      connecting:    "连接中",
+    };
+    el.statusBadge.textContent = labels[status] || status;
+    el.statusBadge.className = `status-badge is-${status}`;
+  }
+
+  // ─── Render: Session info ─────────────────────────────────────────────────────
+  function renderSession() {
+    const s = state.session;
+    if (!s) {
+      el.sessionInfo.innerHTML = '<div class="info-skeleton"></div>';
       return;
     }
 
-    elements.sessionMeta.innerHTML = `
-      <div class="meta-card">
-        <div class="meta-row">
-          <span class="meta-label">本地 Session</span>
-          <span class="meta-value">${escapeHtml(state.session.id || "未知")}</span>
-        </div>
-        <div class="meta-row">
-          <span class="meta-label">Claude Session</span>
-          <span class="meta-value">${escapeHtml(state.session.claude_session_id || "尚未建立")}</span>
-        </div>
-        <div class="meta-row">
-          <span class="meta-label">状态</span>
-          <span class="meta-value">${escapeHtml(state.session.status || "未知")}</span>
-        </div>
-        <div class="meta-row">
-          <span class="meta-label">创建时间</span>
-          <span class="meta-value">${escapeHtml(formatDateTime(state.session.created_at))}</span>
-        </div>
-      </div>
-    `;
+    const statusClass =
+      s.status === "idle"   ? "is-active"  :
+      s.status === "running"? "is-busy"    :
+      s.status === "error"  ? "is-error"   : "is-pending";
+
+    const statusLabel =
+      s.status === "idle"         ? "就绪"   :
+      s.status === "running"      ? "执行中" :
+      s.status === "error"        ? "错误"   :
+      s.status === "needs_config" ? "未配置" :
+      s.status === "connecting"   ? "连接中" : (s.status || "未知");
+
+    const rows = [
+      ["会话 ID", s.id ? `…${s.id.slice(-8)}` : "—"],
+      ["Claude 会话", s.claude_session_id ? `…${s.claude_session_id.slice(-8)}` : "未建立"],
+      ["状态", statusLabel, statusClass],
+      ["创建时间", fmtTime(s.created_at)],
+    ];
+
+    el.sessionInfo.innerHTML = rows
+      .map(([k, v, cls]) => `
+        <div class="info-row">
+          <span class="info-key">${esc(k)}</span>
+          <span class="info-val ${cls || ""}">${esc(v)}</span>
+        </div>`)
+      .join("");
+  }
+
+  // ─── Render: Error ────────────────────────────────────────────────────────────
+  function renderError() {
+    if (state.last_error) {
+      el.errorArea.classList.remove("is-hidden");
+      el.errorText.textContent = state.last_error;
+    } else {
+      el.errorArea.classList.add("is-hidden");
+      el.errorText.textContent = "";
+    }
+  }
+
+  // ─── Render: Capabilities ────────────────────────────────────────────────────
+  function tagHtml(items, cls = "tag-blue", empty = "暂无") {
+    if (!items || items.length === 0) return `<span class="tag tag-muted">${esc(empty)}</span>`;
+    return items.map((v) => `<span class="tag ${cls}">${esc(v)}</span>`).join("");
+  }
+
+  function capGroup(title, countOrBadge, bodyHtml, open = false) {
+    return `
+      <details class="cap-group" ${open ? "open" : ""}>
+        <summary>
+          <div class="cap-group-title">
+            ${esc(title)}
+            <span class="cap-count">${esc(String(countOrBadge))}</span>
+          </div>
+          <svg class="cap-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none">
+            <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </summary>
+        <div class="cap-body">${bodyHtml}</div>
+      </details>`;
   }
 
   function renderCapabilities() {
-    const capabilities = state.capabilities || {};
-    const mcpServers = capabilities.mcp_servers || [];
-    const connectedServers = mcpServers.filter((server) => server.status === "connected");
-    const configuredMcp = capabilities.configured_mcp_servers || [];
-    const knownSkills = capabilities.known_skills || [];
+    const caps = state.capabilities || {};
+    const mcpServers   = caps.mcp_servers || [];
+    const mcpTools     = caps.mcp_tools || [];
+    const knownSkills  = caps.known_skills || [];
+    const agents       = caps.configured_agents || [];
 
-    const mcpServerMarkup =
-      mcpServers.length === 0
-        ? `<span class="chip empty">当前未检测到 Claude 侧 MCP</span>`
-        : mcpServers
-            .map((server) => {
-              const label = `${server.name || "未命名"} · ${server.status || "unknown"}`;
-              return `<span class="chip">${escapeHtml(label)}</span>`;
-            })
-            .join("");
+    const connected = mcpServers.filter((s) => s.status === "connected").length;
 
-    elements.capabilitiesPanel.innerHTML = `
-      <div class="capability-card">
-        <div class="capability-row">
-          <span class="capability-label">Settings</span>
-          <span class="capability-value">${escapeHtml(capabilities.settings_path || "未知")}</span>
-        </div>
-        <div class="capability-row">
-          <span class="capability-label">Claude CLI</span>
-          <span class="capability-value">${escapeHtml(capabilities.resolved_cli || "待探测")}</span>
-        </div>
-        <div class="capability-row">
-          <span class="capability-label">Settings 状态</span>
-          <span class="capability-value">${capabilities.settings_exists ? "可用" : "缺失"}</span>
-        </div>
+    // Config group
+    const configBody = `
+      <div class="cap-row">
+        <span class="cap-key">Settings</span>
+        <span class="cap-val">${caps.settings_exists ? "✓ 可用" : "✗ 缺失"}</span>
       </div>
-      <div class="capability-card">
-        <div class="capability-row">
-          <span class="capability-label">已知 Skills</span>
-          <span class="capability-value chip-list">${renderChipList(knownSkills, "未从 settings 中提取到 skills")}</span>
-        </div>
-        <div class="capability-row">
-          <span class="capability-label">Configured Agents</span>
-          <span class="capability-value chip-list">${renderChipList(capabilities.configured_agents || [], "无")}</span>
-        </div>
+      <div class="cap-row">
+        <span class="cap-key">CLI</span>
+        <span class="cap-val">${esc(caps.resolved_cli ? "已解析" : "待探测")}</span>
+      </div>`;
+
+    // MCP group
+    const mcpServerRows = mcpServers.length
+      ? mcpServers.map((srv) => {
+          const statusCls =
+            srv.status === "connected" ? "tag-green" :
+            srv.status === "error"     ? "tag tag-muted" : "tag tag-muted";
+          return `
+            <div class="cap-row">
+              <span class="cap-key">${esc(srv.name || "?")}</span>
+              <span class="tag ${statusCls}">${esc(srv.status || "?")} · ${srv.tool_count ?? 0} tools</span>
+            </div>`;
+        }).join("")
+      : `<div class="cap-row"><span class="cap-key" style="color:var(--text-3)">暂无已连接的 MCP</span></div>`;
+
+    const mcpBody = `
+      <div class="cap-row">
+        <span class="cap-key">连接状态</span>
+        <span class="cap-val">${connected}/${mcpServers.length} 在线</span>
       </div>
-      <div class="capability-card">
-        <div class="capability-row">
-          <span class="capability-label">Live MCP</span>
-          <span class="capability-value">${connectedServers.length} / ${mcpServers.length}</span>
-        </div>
-        <div class="capability-row">
-          <span class="capability-label">Configured MCP</span>
-          <span class="capability-value chip-list">${renderChipList(configuredMcp, "无")}</span>
-        </div>
-        <div class="capability-row">
-          <span class="capability-label">MCP Servers</span>
-          <span class="capability-value chip-list">${mcpServerMarkup}</span>
-        </div>
-        <div class="capability-row">
-          <span class="capability-label">MCP Tools</span>
-          <span class="capability-value chip-list">${renderChipList(capabilities.mcp_tools || [], "暂无")}</span>
-        </div>
+      ${mcpServerRows}
+      <div class="cap-row" style="margin-top:4px">
+        <span class="cap-key">全部工具</span>
+        <span class="tag-list">${tagHtml(mcpTools, "tag-green", "暂无")}</span>
+      </div>`;
+
+    // Skills & Agents
+    const saBody = `
+      <div class="cap-row">
+        <span class="cap-key">Skills</span>
+        <span class="tag-list">${tagHtml(knownSkills, "tag-orange", "未从配置提取到")}</span>
       </div>
-    `;
+      <div class="cap-row">
+        <span class="cap-key">Agents</span>
+        <span class="tag-list">${tagHtml(agents, "tag-purple", "未配置")}</span>
+      </div>`;
+
+    el.capabilities.innerHTML =
+      capGroup("环境配置", caps.settings_exists ? "OK" : "!", configBody, true) +
+      capGroup("MCP 服务器", `${connected}/${mcpServers.length}`, mcpBody, mcpServers.length > 0) +
+      capGroup("Skills & Agents", knownSkills.length + agents.length, saBody);
   }
 
-  function renderErrorBanner() {
-    if (!state.last_error) {
-      elements.errorBanner.classList.add("is-hidden");
-      elements.errorBanner.textContent = "";
-      return;
-    }
-
-    elements.errorBanner.classList.remove("is-hidden");
-    elements.errorBanner.textContent = state.last_error;
-  }
-
-  function renderConnectionPill() {
-    const sessionStatus = state.session?.status || "loading";
-    let label = "连接中";
-
-    if (connectionState === "open") {
-      label = state.session?.busy ? "执行中" : `已连接 · ${sessionStatus}`;
-    } else if (connectionState === "error") {
-      label = "事件流重连中";
-    }
-
-    elements.connectionPill.textContent = label;
-  }
+  // ─── Render: Messages ────────────────────────────────────────────────────────
+  let prevMessageCount = 0;
 
   function renderMessages() {
-    const messages = [...state.messages].sort((left, right) => left.created_at - right.created_at);
-    if (messages.length === 0) {
-      elements.messages.innerHTML = `
-        <div class="empty-state">
-          还没有对话内容。发送第一条消息后，这里会实时显示 assistant 输出，并在右侧同步展示工具、MCP 与 skills 的执行痕迹。
-        </div>
-      `;
+    const msgs = [...state.messages].sort((a, b) => a.created_at - b.created_at);
+
+    if (msgs.length === 0) {
+      if (prevMessageCount !== 0) {
+        el.messages.innerHTML = `
+          <div class="empty-hint">
+            <div class="empty-hint-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <p class="empty-hint-title">开始对话</p>
+            <p class="empty-hint-desc">发送消息后，Assistant 的回复会在这里实时流式展示，工具与 MCP 调用轨迹会同步出现在右侧时间线。</p>
+          </div>`;
+        prevMessageCount = 0;
+      }
       return;
     }
 
-    elements.messages.innerHTML = messages
-      .map((message) => {
-        const role = message.role || "assistant";
-        const roleLabel =
-          role === "user" ? "User" : role === "assistant" ? "Assistant" : "System";
-        const status = message.status === "streaming" ? "生成中..." : "已完成";
-        const metaParts = [];
-        if (message.model) {
-          metaParts.push(message.model);
-        }
-        if (message.session_id) {
-          metaParts.push(`session ${message.session_id}`);
-        }
+    const wasAtBottom =
+      el.messages.scrollTop + el.messages.clientHeight >=
+      el.messages.scrollHeight - 60;
 
-        return `
-          <article class="message ${escapeHtml(role)}">
-            <div class="message-header">
-              <span class="message-role">${escapeHtml(roleLabel)}</span>
-              <span class="message-meta">${escapeHtml(
-                `${formatTime(message.created_at)}${metaParts.length ? ` · ${metaParts.join(" · ")}` : ""}`
-              )}</span>
-            </div>
-            <div class="message-text">${escapeHtml(message.text || "") || "..."}</div>
-            <div class="message-status">${escapeHtml(status)}</div>
-          </article>
-        `;
-      })
-      .join("");
+    // Incremental update: update/append each message DOM node
+    msgs.forEach((msg) => {
+      const existing = el.messages.querySelector(`[data-msg-id="${CSS.escape(msg.id)}"]`);
+      const html = buildMsgHtml(msg);
+      if (existing) {
+        // Only redraw if content changed (streaming delta)
+        const newEl = htmlToElement(html);
+        if (existing.dataset.msgHash !== msgHash(msg)) {
+          existing.replaceWith(newEl);
+        }
+      } else {
+        el.messages.appendChild(htmlToElement(html));
+      }
+    });
 
-    elements.messages.scrollTop = elements.messages.scrollHeight;
+    // Remove stale nodes
+    el.messages.querySelectorAll("[data-msg-id]").forEach((node) => {
+      if (!msgs.find((m) => m.id === node.dataset.msgId)) {
+        node.remove();
+      }
+    });
+
+    prevMessageCount = msgs.length;
+
+    if (wasAtBottom) {
+      el.messages.scrollTop = el.messages.scrollHeight;
+    }
   }
 
-  function timelineBadge(entry) {
-    if (entry.entry_type === "task") {
-      return { label: "TASK", className: "task" };
-    }
-    if (entry.entry_type === "skill") {
-      return { label: "SKILL", className: "skill" };
-    }
-    if (entry.kind === "mcp") {
-      return { label: "MCP", className: "mcp" };
-    }
-    if (entry.kind === "skill") {
-      return { label: "SKILL", className: "skill" };
-    }
-    return { label: "BUILTIN", className: "builtin" };
+  function msgHash(msg) {
+    return `${msg.status}:${(msg.text || "").length}:${msg.model || ""}`;
   }
+
+  function buildMsgHtml(msg) {
+    const role = msg.role || "assistant";
+    const roleLabel = role === "user" ? "You" : role === "assistant" ? "Claude" : "System";
+    const streaming = msg.status === "streaming";
+
+    const metaParts = [fmtTime(msg.created_at)];
+    if (msg.model) metaParts.push(msg.model.replace("claude-", "").replace(/-\d{8}$/, ""));
+
+    let bodyContent;
+    if (role === "user") {
+      bodyContent = `<div class="md-content"><span style="white-space:pre-wrap">${esc(msg.text || "")}</span></div>`;
+    } else {
+      const html = renderMd(msg.text || (streaming ? "" : "…"));
+      const cursor = streaming ? '<span class="streaming-cursor"></span>' : "";
+      bodyContent = `<div class="md-content">${html}${cursor}</div>`;
+    }
+
+    return `
+      <div class="msg msg--${esc(role)}" data-msg-id="${esc(msg.id)}" data-msg-hash="${esc(msgHash(msg))}">
+        <div class="msg-meta">
+          <span class="msg-role">${esc(roleLabel)}</span>
+          <span>${esc(metaParts.join(" · "))}</span>
+        </div>
+        <div class="msg-body">${bodyContent}</div>
+      </div>`;
+  }
+
+  function htmlToElement(html) {
+    const t = document.createElement("template");
+    t.innerHTML = html.trim();
+    return t.content.firstChild;
+  }
+
+  // ─── Render: Timeline ────────────────────────────────────────────────────────
+  let prevTimelineCount = 0;
 
   function renderTimeline() {
-    const timeline = [...state.timeline].sort((left, right) => {
-      const leftAt = left.started_at || left.finished_at || 0;
-      const rightAt = right.started_at || right.finished_at || 0;
-      return rightAt - leftAt;
+    const entries = [...state.timeline].sort((a, b) => {
+      const at = a.started_at || a.finished_at || 0;
+      const bt = b.started_at || b.finished_at || 0;
+      return bt - at;
     });
 
-    if (timeline.length === 0) {
-      elements.timeline.innerHTML = `
-        <div class="empty-state">
-          右侧会按时间线显示本轮执行轨迹。工具调用会区分内置工具与 MCP，skills 则以 best-effort 方式展示。
+    if (entries.length === 0) {
+      if (prevTimelineCount !== 0) {
+        el.timeline.innerHTML = `
+          <div class="empty-hint empty-hint--sm">
+            <p class="empty-hint-desc">工具调用、MCP 请求和 Skills 使用将在此处按时间顺序展示。</p>
+          </div>`;
+        prevTimelineCount = 0;
+      }
+      el.timelineCount.classList.add("is-hidden");
+      return;
+    }
+
+    el.timelineCount.textContent = entries.length;
+    el.timelineCount.classList.remove("is-hidden");
+
+    entries.forEach((entry) => {
+      const existing = el.timeline.querySelector(`[data-tl-id="${CSS.escape(entry.id)}"]`);
+      const html = buildTlHtml(entry);
+      if (existing) {
+        if (existing.dataset.tlHash !== tlHash(entry)) {
+          const newNode = htmlToElement(html);
+          // preserve open state
+          if (existing.open) newNode.open = true;
+          existing.replaceWith(newNode);
+        }
+      } else {
+        // Insert at correct position (sorted newest-first)
+        const idx = entries.indexOf(entry);
+        const allNodes = [...el.timeline.querySelectorAll("[data-tl-id]")];
+        if (idx === 0 || allNodes.length === 0) {
+          el.timeline.insertBefore(htmlToElement(html), el.timeline.firstChild);
+        } else {
+          const prevEntry = entries[idx - 1];
+          const prevNode = el.timeline.querySelector(`[data-tl-id="${CSS.escape(prevEntry.id)}"]`);
+          if (prevNode) {
+            prevNode.after(htmlToElement(html));
+          } else {
+            el.timeline.appendChild(htmlToElement(html));
+          }
+        }
+      }
+    });
+
+    // Remove stale
+    el.timeline.querySelectorAll("[data-tl-id]").forEach((node) => {
+      if (!entries.find((e) => e.id === node.dataset.tlId)) node.remove();
+    });
+
+    prevTimelineCount = entries.length;
+  }
+
+  function tlHash(entry) {
+    return `${entry.status}:${entry.duration_ms}:${entry.summary || ""}`;
+  }
+
+  function buildTlHtml(entry) {
+    const kindMap = {
+      task:    "task",
+      skill:   "skill",
+      mcp:     "mcp",
+      builtin: "builtin",
+    };
+    const kind =
+      entry.entry_type === "task"  ? "task"  :
+      entry.entry_type === "skill" ? "skill" :
+      kindMap[entry.kind] || "builtin";
+
+    const badgeLabels = {
+      task: "TASK", skill: "SKILL", mcp: "MCP", builtin: "TOOL",
+    };
+
+    const statusIcon =
+      entry.status === "running"   ? "↻" :
+      entry.status === "completed" ? "✓" :
+      entry.status === "failed"    ? "✗" :
+      entry.status === "detected"  ? "◈" : "○";
+
+    const statusClass = `status-${entry.status || "unknown"}`;
+
+    const tags = [];
+    if (entry.status) tags.push(statusTag(entry.status));
+    if (entry.duration_ms != null) tags.push(`<span class="tag tag-muted">${fmtMs(entry.duration_ms)}</span>`);
+    if (entry.task_type)   tags.push(`<span class="tag tag-muted">${esc(entry.task_type)}</span>`);
+
+    const details = [];
+    if (entry.summary) {
+      details.push(`<div><div class="tl-detail-label">摘要</div><pre class="tl-pre">${esc(entry.summary)}</pre></div>`);
+    }
+    if (entry.input_details) {
+      details.push(`<div><div class="tl-detail-label">输入</div><pre class="tl-pre">${esc(entry.input_details)}</pre></div>`);
+    }
+    if (entry.output_details) {
+      details.push(`<div><div class="tl-detail-label">输出</div><pre class="tl-pre">${esc(entry.output_details)}</pre></div>`);
+    }
+    if (entry.details && entry.details !== entry.summary) {
+      details.push(`<div><div class="tl-detail-label">详情</div><pre class="tl-pre">${esc(entry.details)}</pre></div>`);
+    }
+
+    const isOpen = entry.status === "running";
+
+    return `
+      <details class="tl-item kind-${esc(kind)} is-${esc(entry.status || "unknown")}"
+               data-tl-id="${esc(entry.id)}"
+               data-tl-hash="${esc(tlHash(entry))}"
+               ${isOpen ? "open" : ""}>
+        <summary class="tl-summary ${statusClass}">
+          <div class="tl-kind-dot"></div>
+          <span class="tl-name">${esc(entry.name || entry.id)}</span>
+          <span class="tl-badge">${esc(badgeLabels[kind] || "TOOL")}</span>
+          <span class="tl-status-icon">${statusIcon}</span>
+          ${entry.duration_ms != null
+            ? `<span class="tl-duration">${fmtMs(entry.duration_ms)}</span>`
+            : ""}
+        </summary>
+        <div class="tl-body">
+          ${tags.length ? `<div class="tl-tags">${tags.join("")}</div>` : ""}
+          ${details.join("") || `<div style="color:var(--text-3);font-size:12px">暂无详情</div>`}
         </div>
-      `;
-      return;
-    }
-
-    elements.timeline.innerHTML = timeline
-      .map((entry) => {
-        const badge = timelineBadge(entry);
-        const metaTags = [];
-
-        if (entry.status) {
-          metaTags.push(`状态: ${entry.status}`);
-        }
-        if (entry.duration_ms != null) {
-          metaTags.push(`耗时: ${entry.duration_ms} ms`);
-        }
-        if (entry.task_type) {
-          metaTags.push(`任务类型: ${entry.task_type}`);
-        }
-        if (entry.last_tool_name) {
-          metaTags.push(`最近工具: ${entry.last_tool_name}`);
-        }
-
-        const details = [];
-        if (entry.summary) {
-          details.push(`
-            <div class="timeline-detail">
-              <span class="timeline-detail-label">摘要</span>
-              <pre>${escapeHtml(entry.summary)}</pre>
-            </div>
-          `);
-        }
-        if (entry.input_details) {
-          details.push(`
-            <div class="timeline-detail">
-              <span class="timeline-detail-label">输入</span>
-              <pre>${escapeHtml(entry.input_details)}</pre>
-            </div>
-          `);
-        }
-        if (entry.output_details) {
-          details.push(`
-            <div class="timeline-detail">
-              <span class="timeline-detail-label">输出</span>
-              <pre>${escapeHtml(entry.output_details)}</pre>
-            </div>
-          `);
-        }
-        if (entry.details) {
-          details.push(`
-            <div class="timeline-detail">
-              <span class="timeline-detail-label">详情</span>
-              <pre>${escapeHtml(entry.details)}</pre>
-            </div>
-          `);
-        }
-
-        return `
-          <details class="timeline-item" ${entry.status === "running" ? "open" : ""}>
-            <summary>
-              <div class="timeline-title">
-                <span class="timeline-badge ${escapeHtml(badge.className)}">${escapeHtml(badge.label)}</span>
-                <span class="timeline-name">${escapeHtml(entry.name || entry.id)}</span>
-              </div>
-              <span class="timeline-status">${escapeHtml(entry.status || "unknown")}</span>
-            </summary>
-            <div class="timeline-body">
-              <div class="timeline-meta">
-                ${metaTags.map((tag) => `<span class="timeline-tag">${escapeHtml(tag)}</span>`).join("")}
-              </div>
-              ${details.join("") || `<div class="timeline-detail"><pre>暂无更多详情</pre></div>`}
-            </div>
-          </details>
-        `;
-      })
-      .join("");
+      </details>`;
   }
 
-  function renderComposerState() {
-    const session = state.session;
-    const disabled =
-      !session ||
-      session.busy ||
-      !session.settings_exists;
-
-    elements.sendButton.disabled = disabled;
-    elements.messageInput.disabled = disabled;
-    elements.newSessionButton.disabled = newSessionPending;
-
-    if (!session) {
-      elements.composerHint.textContent = "正在加载当前 session。";
-      return;
-    }
-    if (!session.settings_exists) {
-      elements.composerHint.textContent =
-        "未检测到 Claude settings，先准备好 `~/.claude/settings.json`。";
-      return;
-    }
-    if (session.busy) {
-      elements.composerHint.textContent = "本轮还在执行中，等待 assistant 或工具链完成。";
-      return;
-    }
-    elements.composerHint.textContent =
-      "支持多轮对话。点击“新建 Session”会清空当前上下文并重新开始。";
+  function statusTag(status) {
+    const map = {
+      running:   "tag-orange",
+      completed: "tag-green",
+      failed:    "tag tag-muted",
+      detected:  "tag-blue",
+      stopped:   "tag tag-muted",
+    };
+    const labels = {
+      running: "执行中", completed: "完成", failed: "失败",
+      detected: "检测", stopped: "已停止",
+    };
+    return `<span class="tag ${map[status] || "tag-muted"}">${esc(labels[status] || status)}</span>`;
   }
 
+  // ─── Render: Composer ────────────────────────────────────────────────────────
+  function renderComposer() {
+    const s = state.session;
+    const noConfig   = !s || !s.settings_exists;
+    const isBusy     = s && s.busy;
+    const disabled   = noConfig || isBusy;
+
+    el.sendBtn.disabled    = disabled;
+    el.msgInput.disabled   = disabled;
+    el.newSessionBtn.disabled = newSessionLock;
+
+    if (!s) {
+      el.composerHint.textContent = "正在加载…";
+    } else if (noConfig) {
+      el.composerHint.textContent = "请先准备 ~/.claude/settings.json 配置文件。";
+    } else if (isBusy) {
+      el.composerHint.textContent = "执行中，请等待本轮完成…";
+    } else {
+      el.composerHint.textContent = "Enter 发送 · Shift+Enter 换行 · 支持多轮连续对话";
+    }
+  }
+
+  // ─── Render: Turn stats ───────────────────────────────────────────────────────
+  function renderTurnStats() {
+    const assistantMsgs = state.messages.filter((m) => m.role === "assistant" && m.status === "complete");
+    if (assistantMsgs.length === 0) {
+      el.turnStats.classList.add("is-hidden");
+      return;
+    }
+    el.turnStats.classList.remove("is-hidden");
+    el.turnStats.textContent = `${assistantMsgs.length} 轮对话`;
+  }
+
+  // ─── Render all ──────────────────────────────────────────────────────────────
   function renderAll() {
-    renderSessionMeta();
+    renderConnection();
+    renderStatusBadge();
+    renderSession();
+    renderError();
     renderCapabilities();
-    renderErrorBanner();
-    renderConnectionPill();
     renderMessages();
     renderTimeline();
-    renderComposerState();
+    renderComposer();
+    renderTurnStats();
   }
 
-  async function hydrate() {
-    const snapshot = await fetchJson("/api/state");
-    applySnapshot(snapshot);
-    renderAll();
-  }
+  // ─── SSE ─────────────────────────────────────────────────────────────────────
+  let reconnectTimer = null;
+  let reconnectDelay = 2000;
 
-  function connectStream() {
-    if (stream) {
-      stream.close();
-    }
+  function connectSSE() {
+    if (sse) { sse.close(); sse = null; }
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
     connectionState = "connecting";
-    renderConnectionPill();
+    renderConnection();
 
-    stream = new EventSource("/api/stream");
-    stream.addEventListener("update", (messageEvent) => {
+    sse = new EventSource("/api/stream");
+
+    sse.addEventListener("update", (e) => {
       connectionState = "open";
-      const payload = JSON.parse(messageEvent.data);
-      applyEvent(payload);
-      renderAll();
+      reconnectDelay = 2000;
+      try {
+        const ev = JSON.parse(e.data);
+        applyEvent(ev);
+        renderAll();
+      } catch (_) { /* ignore */ }
     });
-    stream.addEventListener("ping", () => {
+
+    sse.addEventListener("ping", () => {
       connectionState = "open";
-      renderConnectionPill();
+      renderConnection();
     });
-    stream.onerror = () => {
+
+    sse.onerror = () => {
       connectionState = "error";
-      renderConnectionPill();
+      renderConnection();
+      sse.close();
+      sse = null;
+      reconnectTimer = setTimeout(() => {
+        reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+        connectSSE();
+      }, reconnectDelay);
     };
   }
 
+  // ─── Hydrate ──────────────────────────────────────────────────────────────────
+  async function hydrate() {
+    const snap = await fetchJson("/api/state");
+    applySnapshot(snap);
+    renderAll();
+  }
+
+  // ─── Actions ─────────────────────────────────────────────────────────────────
   async function handleNewSession() {
     try {
-      newSessionPending = true;
-      renderComposerState();
+      newSessionLock = true;
+      renderComposer();
       const payload = await fetchJson("/api/session/new", {
         method: "POST",
         body: JSON.stringify({}),
@@ -501,49 +662,67 @@
         applySnapshot(payload.state);
         renderAll();
       }
-    } catch (error) {
-      state.last_error = error.message;
-      renderErrorBanner();
+    } catch (err) {
+      state.last_error = err.message;
+      renderError();
     } finally {
-      newSessionPending = false;
-      renderComposerState();
+      newSessionLock = false;
+      renderComposer();
     }
   }
 
-  async function handleSendMessage(event) {
-    event.preventDefault();
-    const text = elements.messageInput.value.trim();
-    if (!text) {
-      return;
-    }
+  async function handleSend(e) {
+    e.preventDefault();
+    const text = el.msgInput.value.trim();
+    if (!text) return;
 
     try {
       await fetchJson("/api/message", {
         method: "POST",
         body: JSON.stringify({ message: text }),
       });
-      elements.messageInput.value = "";
-      elements.messageInput.focus();
-    } catch (error) {
-      state.last_error = error.message;
-      renderErrorBanner();
-      renderComposerState();
+      el.msgInput.value = "";
+      autoResizeTextarea();
+      el.msgInput.focus();
+    } catch (err) {
+      state.last_error = err.message;
+      renderError();
+      renderComposer();
     }
   }
 
-  function bindEvents() {
-    elements.composer.addEventListener("submit", handleSendMessage);
-    elements.newSessionButton.addEventListener("click", handleNewSession);
+  // ─── Auto-resize textarea ────────────────────────────────────────────────────
+  function autoResizeTextarea() {
+    el.msgInput.style.height = "auto";
+    el.msgInput.style.height = `${Math.min(el.msgInput.scrollHeight, 200)}px`;
   }
 
-  async function bootstrap() {
-    bindEvents();
-    await hydrate();
-    connectStream();
+  // ─── Key bindings ────────────────────────────────────────────────────────────
+  function handleKey(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!el.sendBtn.disabled) {
+        el.composer.dispatchEvent(new Event("submit", { cancelable: true }));
+      }
+    }
   }
 
-  bootstrap().catch((error) => {
-    state.last_error = error.message;
-    renderAll();
-  });
+  // ─── Boot ────────────────────────────────────────────────────────────────────
+  function bind() {
+    el.composer.addEventListener("submit", handleSend);
+    el.newSessionBtn.addEventListener("click", handleNewSession);
+    el.msgInput.addEventListener("input", autoResizeTextarea);
+    el.msgInput.addEventListener("keydown", handleKey);
+  }
+
+  async function boot() {
+    bind();
+    await hydrate().catch((err) => {
+      state.last_error = err.message;
+      renderAll();
+    });
+    connectSSE();
+  }
+
+  boot();
 })();

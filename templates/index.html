@@ -1,81 +1,126 @@
 <!doctype html>
 <html lang="zh-CN">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Claude Agent UI</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claude Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
-      href="{{ url_for('static', filename='css/app.css') }}"
-    >
-    <script
-      defer
-      src="{{ url_for('static', filename='js/app.js') }}"
-    ></script>
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
+    <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
   </head>
   <body>
-    <div class="app-shell">
+    <div class="layout">
+
+      <!-- ===== LEFT SIDEBAR ===== -->
       <aside class="sidebar">
-        <div class="panel">
-          <div class="panel-label">Session</div>
-          <h1 class="title">Claude Agent UI</h1>
-          <p class="subtitle">
-            单用户本地演示，支持多轮对话、工具/MCP/skills 可视化与新建 session。
-          </p>
-          <div class="session-meta" id="session-meta"></div>
-          <div class="sidebar-actions">
-            <button id="new-session-button" class="primary-button" type="button">
-              新建 Session
+        <div class="sidebar-header">
+          <div class="logo">
+            <div class="logo-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="logo-text">Claude Agent</span>
+          </div>
+          <div id="connection-dot" class="connection-dot" title="连接状态"></div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="section-header">
+            <span class="section-label">Session</span>
+            <button id="new-session-btn" class="btn-ghost btn-sm" type="button">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+              </svg>
+              新建
             </button>
           </div>
-          <div id="error-banner" class="error-banner is-hidden"></div>
+          <div id="session-info" class="session-info">
+            <div class="info-skeleton"></div>
+          </div>
         </div>
 
-        <div class="panel">
-          <div class="panel-label">Capabilities</div>
-          <div id="capabilities-panel" class="capabilities-panel"></div>
+        <div id="error-area" class="error-area is-hidden">
+          <div class="error-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+              <path d="M12 8v4M12 16h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <span id="error-text"></span>
+        </div>
+
+        <div class="sidebar-section sidebar-section--grow">
+          <div class="section-header">
+            <span class="section-label">Capabilities</span>
+          </div>
+          <div id="capabilities" class="capabilities"></div>
         </div>
       </aside>
 
-      <main class="chat-column">
-        <section class="panel chat-panel">
-          <div class="chat-header">
-            <div>
-              <div class="panel-label">Conversation</div>
-              <h2 class="panel-title">当前对话</h2>
-            </div>
-            <div id="connection-pill" class="status-pill">连接中</div>
+      <!-- ===== MAIN CHAT ===== -->
+      <main class="chat">
+        <div class="chat-header">
+          <div class="chat-header-left">
+            <h1 class="chat-title">对话</h1>
+            <div id="status-badge" class="status-badge">连接中</div>
           </div>
-          <div id="messages" class="messages"></div>
+          <div id="turn-stats" class="turn-stats is-hidden"></div>
+        </div>
+
+        <div id="messages" class="messages">
+          <div class="empty-hint">
+            <div class="empty-hint-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <p class="empty-hint-title">开始对话</p>
+            <p class="empty-hint-desc">发送消息后，Assistant 的回复会在这里实时流式展示，工具与 MCP 调用轨迹会同步出现在右侧时间线。</p>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
           <form id="composer" class="composer">
-            <label class="composer-label" for="message-input">发送给 agent</label>
-            <textarea
-              id="message-input"
-              name="message"
-              rows="4"
-              placeholder="输入你的问题，Agent 会实时展示文本与工具执行轨迹。"
-            ></textarea>
-            <div class="composer-actions">
-              <span id="composer-hint" class="composer-hint"></span>
-              <button id="send-button" class="primary-button" type="submit">
-                发送
+            <div class="composer-inner">
+              <textarea
+                id="msg-input"
+                class="composer-input"
+                placeholder="输入消息，Shift+Enter 换行，Enter 发送…"
+                rows="1"
+              ></textarea>
+              <button id="send-btn" class="send-btn" type="submit" aria-label="发送">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
               </button>
             </div>
+            <div class="composer-footer">
+              <span id="composer-hint" class="composer-hint"></span>
+            </div>
           </form>
-        </section>
+        </div>
       </main>
 
-      <aside class="timeline-column">
-        <section class="panel timeline-panel">
-          <div class="chat-header">
-            <div>
-              <div class="panel-label">Execution</div>
-              <h2 class="panel-title">执行时间线</h2>
-            </div>
+      <!-- ===== RIGHT TIMELINE ===== -->
+      <aside class="timeline-col">
+        <div class="timeline-header">
+          <h2 class="timeline-title">执行时间线</h2>
+          <span id="timeline-count" class="timeline-count is-hidden"></span>
+        </div>
+        <div id="timeline" class="timeline">
+          <div class="empty-hint empty-hint--sm">
+            <p class="empty-hint-desc">工具调用、MCP 请求和 Skills 使用将在此处按时间顺序展示。</p>
           </div>
-          <div id="timeline" class="timeline"></div>
-        </section>
+        </div>
       </aside>
+
     </div>
   </body>
 </html>
