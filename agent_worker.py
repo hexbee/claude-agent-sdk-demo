@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -416,10 +417,41 @@ class AgentSessionWorker:
             return client
 
     async def _disconnect_client_quietly(self, client: ClaudeSDKClient) -> None:
+        await self._disconnect_client_safely(client, quiet=True)
+
+    @staticmethod
+    def _is_cross_task_close_error(exc: BaseException) -> bool:
+        return isinstance(exc, RuntimeError) and (
+            "different task than it was entered in" in str(exc)
+        )
+
+    async def _disconnect_client_safely(
+        self,
+        client: ClaudeSDKClient,
+        *,
+        quiet: bool,
+    ) -> None:
         try:
             await client.disconnect()
-        except Exception:
             return
+        except Exception as exc:
+            if not self._is_cross_task_close_error(exc):
+                if quiet:
+                    return
+                raise
+
+        # The SDK query can own AnyIO task groups entered by a different task
+        # than the one performing shutdown. Fall back to transport-level cleanup
+        # so Ctrl+C and session resets do not emit noisy atexit tracebacks.
+        transport = getattr(client, "_transport", None)
+        if transport is not None:
+            with suppress(Exception):
+                await transport.close()
+
+        if hasattr(client, "_query"):
+            client._query = None
+        if hasattr(client, "_transport"):
+            client._transport = None
 
     async def _refresh_capabilities(self, generation: int) -> None:
         if generation != self._generation:
@@ -1200,7 +1232,7 @@ class AgentSessionWorker:
     async def shutdown(self) -> None:
         if self._client is not None:
             try:
-                await self._client.disconnect()
+                await self._disconnect_client_safely(self._client, quiet=False)
             finally:
                 self._client = None
                 self._client_generation = None
