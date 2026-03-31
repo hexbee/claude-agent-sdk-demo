@@ -311,10 +311,20 @@
         <span class="tag-list">${tagHtml(agents, "tag-purple", "未配置")}</span>
       </div>`;
 
+    // Snapshot current open states before replacing DOM (key = group title)
+    const openStates = {};
+    el.capabilities.querySelectorAll("details.cap-group").forEach((d) => {
+      const title = d.querySelector(".cap-group-title")?.firstChild?.textContent?.trim();
+      if (title) openStates[title] = d.open;
+    });
+
+    const defaultOpen = (title, fallback) =>
+      Object.prototype.hasOwnProperty.call(openStates, title) ? openStates[title] : fallback;
+
     el.capabilities.innerHTML =
-      capGroup("环境配置", caps.settings_exists ? "OK" : "!", configBody, true) +
-      capGroup("MCP 服务器", `${connected}/${mcpServers.length}`, mcpBody, mcpServers.length > 0) +
-      capGroup("Skills & Agents", knownSkills.length + agents.length, saBody);
+      capGroup("环境配置", caps.settings_exists ? "OK" : "!", configBody, defaultOpen("环境配置", true)) +
+      capGroup("MCP 服务器", `${connected}/${mcpServers.length}`, mcpBody, defaultOpen("MCP 服务器", mcpServers.length > 0)) +
+      capGroup("Skills & Agents", knownSkills.length + agents.length, saBody, defaultOpen("Skills & Agents", true));
   }
 
   // ─── Render: Messages ────────────────────────────────────────────────────────
@@ -374,16 +384,21 @@
   }
 
   function msgHash(msg) {
-    return `${msg.status}:${(msg.text || "").length}:${msg.model || ""}`;
+    return `${msg.status}:${(msg.text || "").length}:${msg.model || ""}:${msg.subagent_id || ""}`;
   }
 
   function buildMsgHtml(msg) {
     const role = msg.role || "assistant";
     const roleLabel = role === "user" ? "You" : role === "assistant" ? "Claude" : "System";
     const streaming = msg.status === "streaming";
+    const isSubagent = Boolean(msg.subagent_id);
 
     const metaParts = [fmtTime(msg.created_at)];
     if (msg.model) metaParts.push(msg.model.replace("claude-", "").replace(/-\d{8}$/, ""));
+
+    const subagentBadge = isSubagent
+      ? `<span class="msg-subagent-badge" title="来自 sub-agent">↳ agent</span>`
+      : "";
 
     let bodyContent;
     if (role === "user") {
@@ -398,6 +413,7 @@
       <div class="msg msg--${esc(role)}" data-msg-id="${esc(msg.id)}" data-msg-hash="${esc(msgHash(msg))}">
         <div class="msg-meta">
           <span class="msg-role">${esc(roleLabel)}</span>
+          ${subagentBadge}
           <span>${esc(metaParts.join(" · "))}</span>
         </div>
         <div class="msg-body">${bodyContent}</div>
@@ -412,6 +428,9 @@
 
   // ─── Render: Timeline ────────────────────────────────────────────────────────
   let prevTimelineCount = 0;
+  // Tracks entries that were auto-opened because they were running.
+  // Persists across renders so we can detect when a running→completed transition happens.
+  let tlAutoOpenedIds = new Set();
 
   function renderTimeline() {
     const entries = [...state.timeline].sort((a, b) => {
@@ -428,45 +447,60 @@
           </div>`;
         prevTimelineCount = 0;
       }
+      tlAutoOpenedIds = new Set();
       el.timelineCount.classList.add("is-hidden");
       return;
     }
 
-    el.timelineCount.textContent = entries.length;
-    el.timelineCount.classList.remove("is-hidden");
+    // Build parent→children map first so we can check childRunning below.
+    const idSet = new Set(entries.map((e) => e.id));
+    const childMap = {};
+    const childIdSet = new Set();
 
     entries.forEach((entry) => {
-      const existing = el.timeline.querySelector(`[data-tl-id="${CSS.escape(entry.id)}"]`);
-      const html = buildTlHtml(entry);
-      if (existing) {
-        if (existing.dataset.tlHash !== tlHash(entry)) {
-          const newNode = htmlToElement(html);
-          // preserve open state
-          if (existing.open) newNode.open = true;
-          existing.replaceWith(newNode);
-        }
-      } else {
-        // Insert at correct position (sorted newest-first)
-        const idx = entries.indexOf(entry);
-        const allNodes = [...el.timeline.querySelectorAll("[data-tl-id]")];
-        if (idx === 0 || allNodes.length === 0) {
-          el.timeline.insertBefore(htmlToElement(html), el.timeline.firstChild);
-        } else {
-          const prevEntry = entries[idx - 1];
-          const prevNode = el.timeline.querySelector(`[data-tl-id="${CSS.escape(prevEntry.id)}"]`);
-          if (prevNode) {
-            prevNode.after(htmlToElement(html));
-          } else {
-            el.timeline.appendChild(htmlToElement(html));
-          }
-        }
+      let parentId = entry.subagent_id || null;
+      if (!parentId && entry.tool_use_id && idSet.has(entry.tool_use_id)) {
+        parentId = entry.tool_use_id;
+      }
+      if (parentId) {
+        (childMap[parentId] = childMap[parentId] || []).push(entry);
+        childIdSet.add(entry.id);
       }
     });
 
-    // Remove stale
-    el.timeline.querySelectorAll("[data-tl-id]").forEach((node) => {
-      if (!entries.find((e) => e.id === node.dataset.tlId)) node.remove();
+    // Snapshot manually-opened entries using the PREVIOUS render's autoOpenedIds.
+    // Any entry that is open AND was auto-opened last render is skipped —
+    // this correctly handles the running→completed transition where the DOM
+    // still has the details open but the entry is no longer running.
+    const openIds = new Set();
+    el.timeline.querySelectorAll("details[data-tl-id]").forEach((n) => {
+      if (n.open && !tlAutoOpenedIds.has(n.dataset.tlId)) {
+        openIds.add(n.dataset.tlId);
+      }
     });
+
+    // Recompute autoOpenedIds for THIS render cycle.
+    tlAutoOpenedIds = new Set();
+    entries.forEach((entry) => {
+      const isRunning =
+        entry.status === "running" ||
+        (childMap[entry.id] || []).some((c) => c.status === "running");
+      if (isRunning) tlAutoOpenedIds.add(entry.id);
+    });
+
+    const rootEntries = entries.filter((e) => !childIdSet.has(e.id));
+
+    el.timelineCount.textContent = entries.length;
+    el.timelineCount.classList.remove("is-hidden");
+
+    el.timeline.innerHTML = rootEntries
+      .map((entry) => {
+        const children = (childMap[entry.id] || []).sort(
+          (a, b) => (a.started_at || 0) - (b.started_at || 0)
+        );
+        return buildTlHtml(entry, children, openIds);
+      })
+      .join("");
 
     prevTimelineCount = entries.length;
   }
@@ -475,20 +509,22 @@
     return `${entry.status}:${entry.duration_ms}:${entry.summary || ""}`;
   }
 
-  function buildTlHtml(entry) {
+  function buildTlHtml(entry, children = [], openIds = new Set()) {
     const kindMap = {
       task:    "task",
       skill:   "skill",
       mcp:     "mcp",
       builtin: "builtin",
+      agent:   "agent",
     };
     const kind =
-      entry.entry_type === "task"  ? "task"  :
-      entry.entry_type === "skill" ? "skill" :
+      entry.entry_type === "agent" ? "agent"  :
+      entry.entry_type === "task"  ? "task"   :
+      entry.entry_type === "skill" ? "skill"  :
       kindMap[entry.kind] || "builtin";
 
     const badgeLabels = {
-      task: "TASK", skill: "SKILL", mcp: "MCP", builtin: "TOOL",
+      task: "TASK", skill: "SKILL", mcp: "MCP", builtin: "TOOL", agent: "AGENT",
     };
 
     const statusIcon =
@@ -503,6 +539,8 @@
     if (entry.status) tags.push(statusTag(entry.status));
     if (entry.duration_ms != null) tags.push(`<span class="tag tag-muted">${fmtMs(entry.duration_ms)}</span>`);
     if (entry.task_type)   tags.push(`<span class="tag tag-muted">${esc(entry.task_type)}</span>`);
+    if (entry.agent_type && entry.agent_type !== entry.task_type) tags.push(`<span class="tag tag-teal">${esc(entry.agent_type)}</span>`);
+    if (entry.last_tool_name) tags.push(`<span class="tag tag-muted">↳ ${esc(entry.last_tool_name)}</span>`);
 
     const details = [];
     if (entry.summary) {
@@ -518,16 +556,30 @@
       details.push(`<div><div class="tl-detail-label">详情</div><pre class="tl-pre">${esc(entry.details)}</pre></div>`);
     }
 
-    const isOpen = entry.status === "running";
+    const hasChildren = children.length > 0;
+    const childRunning = children.some((c) => c.status === "running");
+    const isOpen = openIds.has(entry.id) || entry.status === "running" || childRunning;
+
+    // Nested children section (sub-agent steps)
+    const childrenHtml = hasChildren
+      ? `<div class="tl-children">
+          ${children.map((child) => buildTlHtml(child, [], openIds)).join("")}
+        </div>`
+      : "";
+
+    // Small badge on the summary row showing number of nested steps
+    const childCountBadge = hasChildren
+      ? `<span class="tl-child-count">${children.length} 步</span>`
+      : "";
 
     return `
       <details class="tl-item kind-${esc(kind)} is-${esc(entry.status || "unknown")}"
                data-tl-id="${esc(entry.id)}"
-               data-tl-hash="${esc(tlHash(entry))}"
                ${isOpen ? "open" : ""}>
-        <summary class="tl-summary ${statusClass}">
+        <summary class="tl-summary ${statusClass}"${entry.subagent_type ? ` title="${esc(entry.subagent_type)}"` : ""}>
           <div class="tl-kind-dot"></div>
           <span class="tl-name">${esc(entry.name || entry.id)}</span>
+          ${childCountBadge}
           <span class="tl-badge">${esc(badgeLabels[kind] || "TOOL")}</span>
           <span class="tl-status-icon">${statusIcon}</span>
           ${entry.duration_ms != null
@@ -536,7 +588,8 @@
         </summary>
         <div class="tl-body">
           ${tags.length ? `<div class="tl-tags">${tags.join("")}</div>` : ""}
-          ${details.join("") || `<div style="color:var(--text-3);font-size:12px">暂无详情</div>`}
+          ${details.join("") || (!hasChildren ? `<div style="color:var(--text-3);font-size:12px">暂无详情</div>` : "")}
+          ${childrenHtml}
         </div>
       </details>`;
   }

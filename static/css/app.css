@@ -29,6 +29,10 @@
   --purple-dim:  rgba(163,113,247,0.14);
   --purple-border:rgba(163,113,247,0.3);
 
+  --teal:        #2dd4bf;
+  --teal-dim:    rgba(45,212,191,0.14);
+  --teal-border: rgba(45,212,191,0.28);
+
   --red:         #f85149;
   --red-dim:     rgba(248,81,73,0.14);
   --red-border:  rgba(248,81,73,0.3);
@@ -351,6 +355,7 @@ details[open] .cap-chevron { transform: rotate(90deg); }
 .tag-green  { background: var(--green-dim);  border-color: var(--green-border);  color: var(--green); }
 .tag-orange { background: var(--orange-dim); border-color: var(--orange-border); color: var(--orange); }
 .tag-purple { background: var(--purple-dim); border-color: var(--purple-border); color: var(--purple); }
+.tag-teal   { background: var(--teal-dim);   border-color: var(--teal-border);   color: var(--teal); }
 .tag-muted  { background: var(--bg-3); color: var(--text-3); }
 
 /* ─────────────────────────────────────────────
@@ -535,6 +540,22 @@ details[open] .cap-chevron { transform: rotate(90deg); }
   border-radius: var(--radius-sm);
 }
 
+/* Subagent indicator on messages */
+.msg-subagent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 8px;
+  background: var(--teal-dim);
+  border: 1px solid var(--teal-border);
+  color: var(--teal);
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
 /* Streaming cursor */
 .streaming-cursor {
   display: inline-block;
@@ -715,11 +736,13 @@ details[open] .cap-chevron { transform: rotate(90deg); }
   background: var(--bg-2);
   overflow: hidden;
   animation: msg-in 0.15s ease-out;
+  flex-shrink: 0;
 }
 
 .tl-item.is-running  { border-color: var(--orange-border); }
 .tl-item.is-completed{ border-color: var(--border); }
 .tl-item.is-failed   { border-color: var(--red-border); background: var(--red-dim); }
+.tl-item.kind-agent  { border-color: var(--teal-border); }
 
 .tl-summary {
   display: flex;
@@ -744,6 +767,7 @@ details[open] .cap-chevron { transform: rotate(90deg); }
 .kind-mcp     .tl-kind-dot { background: var(--green); }
 .kind-skill   .tl-kind-dot { background: var(--orange); }
 .kind-task    .tl-kind-dot { background: var(--blue); }
+.kind-agent   .tl-kind-dot { background: var(--teal); }
 
 .tl-name {
   flex: 1;
@@ -768,6 +792,7 @@ details[open] .cap-chevron { transform: rotate(90deg); }
 .kind-mcp     .tl-badge { background: var(--green-dim);  color: var(--green); }
 .kind-skill   .tl-badge { background: var(--orange-dim); color: var(--orange); }
 .kind-task    .tl-badge { background: var(--blue-dim);   color: var(--blue); }
+.kind-agent   .tl-badge { background: var(--teal-dim);   color: var(--teal); }
 
 .tl-status-icon {
   font-size: 13px;
@@ -823,6 +848,40 @@ details[open] .cap-chevron { transform: rotate(90deg); }
   max-height: 180px;
   overflow-y: auto;
   scrollbar-width: thin;
+}
+
+/* ─── Nested sub-agent steps ──────────────────────────────── */
+.tl-children {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+}
+
+.tl-children .tl-item {
+  background: var(--bg);
+  border-color: var(--border-2);
+}
+
+.tl-children .tl-summary {
+  padding: 7px 10px;
+}
+
+.tl-children .tl-name {
+  font-size: 11px;
+}
+
+/* Badge shown on summary row when entry has nested steps */
+.tl-child-count {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--text-3);
+  flex-shrink: 0;
 }
 
 /* ─────────────────────────────────────────────

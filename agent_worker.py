@@ -36,6 +36,9 @@ from agent_runtime import (
 
 UNCHANGED = object()
 
+# Tool names that represent subagent / Task invocations
+_AGENT_TOOL_NAMES: frozenset[str] = frozenset({"Agent", "Task"})
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -82,6 +85,10 @@ def classify_tool_kind(
     mcp_tool_names: Iterable[str],
     known_skills: Iterable[str],
 ) -> str:
+    # Agent / Task tool spawns a subagent — highest priority
+    if tool_name in _AGENT_TOOL_NAMES:
+        return "agent"
+
     mcp_name_set = set(mcp_tool_names)
     candidate_names = {tool_name}
     if tool_name.startswith("mcp__"):
@@ -515,6 +522,7 @@ class AgentSessionWorker:
     async def _run_turn(self, text: str, generation: int) -> None:
         turn_context = {
             "streaming_message_id": None,
+            "subagent_streams": {},  # parent_tool_use_id -> message_id
             "tool_names": {},
             "seen_skills": set(),
             "result_error": None,
@@ -584,13 +592,25 @@ class AgentSessionWorker:
             delta = extract_stream_text_delta(message.event)
             if not delta:
                 return
-            message_id = turn_context["streaming_message_id"]
-            if message_id is None:
-                message_id = self._create_streaming_assistant_message(
-                    generation,
-                    session_id=message.session_id,
-                )
-                turn_context["streaming_message_id"] = message_id
+            parent_id = message.parent_tool_use_id
+            if parent_id:
+                # Streaming text from within a subagent
+                message_id = turn_context["subagent_streams"].get(parent_id)
+                if message_id is None:
+                    message_id = self._create_streaming_assistant_message(
+                        generation,
+                        session_id=message.session_id,
+                        subagent_id=parent_id,
+                    )
+                    turn_context["subagent_streams"][parent_id] = message_id
+            else:
+                message_id = turn_context["streaming_message_id"]
+                if message_id is None:
+                    message_id = self._create_streaming_assistant_message(
+                        generation,
+                        session_id=message.session_id,
+                    )
+                    turn_context["streaming_message_id"] = message_id
             self._append_assistant_delta(generation, message_id, delta)
             return
 
@@ -600,23 +620,30 @@ class AgentSessionWorker:
 
         if isinstance(message, UserMessage):
             if isinstance(message.content, list):
-                self._process_content_blocks(message.content, generation, turn_context)
+                self._process_content_blocks(
+                    message.content,
+                    generation,
+                    turn_context,
+                    parent_tool_use_id=message.parent_tool_use_id,
+                )
             return
 
         if isinstance(message, TaskStartedMessage):
+            is_agent = bool(message.task_type)
             self._upsert_task_entry(
                 generation,
                 entry_id=f"task-{message.task_id}",
                 payload={
                     "id": f"task-{message.task_id}",
-                    "entry_type": "task",
-                    "kind": "builtin",
+                    "entry_type": "agent" if is_agent else "task",
+                    "kind": "agent" if is_agent else "builtin",
                     "name": message.description,
                     "status": "running",
                     "task_id": message.task_id,
                     "task_type": message.task_type,
+                    "agent_type": message.task_type,
                     "tool_use_id": message.tool_use_id,
-                    "summary": "任务开始执行",
+                    "summary": "子 Agent 开始执行" if is_agent else "任务开始执行",
                     "details": "",
                     "usage": None,
                     "started_at": now_ms(),
@@ -710,14 +737,27 @@ class AgentSessionWorker:
             block.text for block in message.content if isinstance(block, TextBlock) and block.text
         ]
         full_text = "".join(text_blocks)
+        parent_id = message.parent_tool_use_id  # non-None means from within a subagent
 
         if full_text:
-            message_id = turn_context.get("streaming_message_id")
-            if message_id is None:
-                message_id = self._create_streaming_assistant_message(
-                    generation,
-                    model=message.model,
-                )
+            if parent_id:
+                # Subagent's own assistant response
+                message_id = turn_context["subagent_streams"].get(parent_id)
+                if message_id is None:
+                    message_id = self._create_streaming_assistant_message(
+                        generation,
+                        model=message.model,
+                        subagent_id=parent_id,
+                    )
+                    turn_context["subagent_streams"][parent_id] = message_id
+            else:
+                message_id = turn_context.get("streaming_message_id")
+                if message_id is None:
+                    message_id = self._create_streaming_assistant_message(
+                        generation,
+                        model=message.model,
+                    )
+
             self._finalize_assistant_message(
                 generation,
                 message_id,
@@ -725,8 +765,12 @@ class AgentSessionWorker:
                 model=message.model,
                 usage=serialize_for_json(message.usage),
                 error=message.error,
+                subagent_id=parent_id,
             )
-            turn_context["streaming_message_id"] = None
+            if parent_id:
+                turn_context["subagent_streams"].pop(parent_id, None)
+            else:
+                turn_context["streaming_message_id"] = None
             self._register_skill_mentions(
                 generation,
                 full_text,
@@ -734,7 +778,12 @@ class AgentSessionWorker:
                 source="assistant",
             )
 
-        self._process_content_blocks(message.content, generation, turn_context)
+        self._process_content_blocks(
+            message.content,
+            generation,
+            turn_context,
+            parent_tool_use_id=parent_id,
+        )
 
         if message.error:
             self._emit(
@@ -750,6 +799,7 @@ class AgentSessionWorker:
         *,
         session_id: str | None = None,
         model: str | None = None,
+        subagent_id: str | None = None,
     ) -> str:
         message = {
             "id": make_id("message"),
@@ -758,6 +808,7 @@ class AgentSessionWorker:
             "status": "streaming",
             "model": model,
             "session_id": session_id,
+            "subagent_id": subagent_id,
             "usage": None,
             "error": None,
             "created_at": now_ms(),
@@ -811,6 +862,7 @@ class AgentSessionWorker:
         model: str | None,
         usage: Any,
         error: str | None,
+        subagent_id: str | None = None,
     ) -> None:
         with self._state_lock:
             if generation != self._generation:
@@ -832,6 +884,8 @@ class AgentSessionWorker:
             message["usage"] = usage
             message["error"] = error
             message["status"] = "complete"
+            if subagent_id is not None:
+                message["subagent_id"] = subagent_id
             payload = copy.deepcopy(message)
 
         self._emit({"type": "assistant_message", "message": payload})
@@ -866,12 +920,13 @@ class AgentSessionWorker:
         blocks: list[Any],
         generation: int,
         turn_context: dict[str, Any],
+        parent_tool_use_id: str | None = None,
     ) -> None:
         for block in blocks:
             if isinstance(block, ToolUseBlock):
-                self._start_tool(block, generation, turn_context)
+                self._start_tool(block, generation, turn_context, parent_tool_use_id)
             elif isinstance(block, ToolResultBlock):
-                self._finish_tool(block, generation, turn_context)
+                self._finish_tool(block, generation, turn_context, parent_tool_use_id)
 
     def _read_tool_classification_context(self, generation: int) -> tuple[set[str], list[str]]:
         with self._state_lock:
@@ -888,6 +943,7 @@ class AgentSessionWorker:
         block: ToolUseBlock,
         generation: int,
         turn_context: dict[str, Any],
+        parent_tool_use_id: str | None = None,
     ) -> None:
         mcp_tool_names, known_skills = self._read_tool_classification_context(generation)
         kind = classify_tool_kind(
@@ -897,13 +953,13 @@ class AgentSessionWorker:
         )
         turn_context["tool_names"][block.id] = block.name
 
-        entry = {
+        entry: dict[str, Any] = {
             "id": block.id,
-            "entry_type": "tool",
+            "entry_type": "agent" if kind == "agent" else "tool",
             "kind": kind,
             "name": block.name,
             "status": "running",
-            "summary": "工具正在执行",
+            "summary": "子 Agent 调用中" if kind == "agent" else "工具正在执行",
             "input_preview": truncate_text(pretty_json(block.input)),
             "input_details": pretty_json(block.input),
             "output_preview": "",
@@ -913,6 +969,11 @@ class AgentSessionWorker:
             "finished_at": None,
             "duration_ms": None,
         }
+        if parent_tool_use_id:
+            entry["subagent_id"] = parent_tool_use_id
+        if kind == "agent" and isinstance(block.input, dict):
+            entry["agent_type"] = block.input.get("agent_type") or block.input.get("description", "")
+            entry["subagent_type"] = block.input.get("subagent_type", "")
         self._upsert_timeline_entry(generation, entry, event_type="tool_started")
 
         if kind == "skill":
@@ -928,6 +989,7 @@ class AgentSessionWorker:
         block: ToolResultBlock,
         generation: int,
         turn_context: dict[str, Any],
+        parent_tool_use_id: str | None = None,
     ) -> None:
         tool_name = turn_context["tool_names"].get(block.tool_use_id, block.tool_use_id)
         mcp_tool_names, known_skills = self._read_tool_classification_context(generation)
@@ -937,9 +999,9 @@ class AgentSessionWorker:
             known_skills=known_skills,
         )
 
-        entry = {
+        entry: dict[str, Any] = {
             "id": block.tool_use_id,
-            "entry_type": "tool",
+            "entry_type": "agent" if kind == "agent" else "tool",
             "kind": kind,
             "name": tool_name,
             "status": "failed" if block.is_error else "completed",
@@ -949,6 +1011,8 @@ class AgentSessionWorker:
             "error": bool(block.is_error),
             "finished_at": now_ms(),
         }
+        if parent_tool_use_id:
+            entry["subagent_id"] = parent_tool_use_id
         self._upsert_timeline_entry(generation, entry, event_type="tool_finished")
 
     def _update_task_progress(
@@ -958,11 +1022,11 @@ class AgentSessionWorker:
     ) -> None:
         entry = {
             "id": f"task-{message.task_id}",
-            "entry_type": "task",
-            "kind": "builtin",
+            "entry_type": "agent",
+            "kind": "agent",
             "name": message.description,
             "status": "running",
-            "summary": "任务仍在执行",
+            "summary": "子 Agent 仍在执行",
             "details": (
                 f"最近工具: {message.last_tool_name or '无'}\n"
                 f"Tokens: {message.usage.get('total_tokens', 0)}\n"
@@ -991,8 +1055,8 @@ class AgentSessionWorker:
 
         entry = {
             "id": f"task-{message.task_id}",
-            "entry_type": "task",
-            "kind": "builtin",
+            "entry_type": "agent",
+            "kind": "agent",
             "name": message.summary or message.task_id,
             "status": status,
             "summary": message.summary,
